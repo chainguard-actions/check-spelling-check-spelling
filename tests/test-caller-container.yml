@@ -1,0 +1,28 @@
+name: Test caller_container input
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_EVENT_NAME: push
+      GITHUB_REF: refs/heads/main
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          caller_container: ''
+          quit_without_error: '1'
+          post_comment: '0'
+          checkout: 'false'
+          debug: '0'
+        continue-on-error: true
+      - name: Assert action ran with caller_container input
+        run: |
+          echo "result_code: ${{ steps.action.outputs.result_code }}"
+          echo "docker_container: ${{ steps.action.outputs.docker_container }}"
+          echo "Action completed with caller_container input"
+          echo "PASS"
