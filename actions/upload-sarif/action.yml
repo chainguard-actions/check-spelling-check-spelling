@@ -1,0 +1,63 @@
+name: 'Code Scanning : Upload SARIF'
+description: 'Upload the analysis results'
+inputs:
+  sarif_file:
+    description:
+    required: false
+    default: '../results'
+  checkout_path:
+    description:
+    required: false
+    default: ${{ github.workspace }}
+  ref:
+    description:
+    required: false
+  sha:
+    description:
+    required: false
+  token:
+    description:
+    required: false
+    default: ${{ github.token }}
+  matrix:
+    description:
+    default: ${{ toJson(matrix) }}
+  category:
+    description:
+    required: false
+  wait-for-processing:
+    description:
+    required: true
+    default: "true"
+  check-spelling-working-directory:
+    description:
+    required: false
+    default: ''
+outputs:
+  sarif-id:
+    description:
+    value: ${{ steps.action.outputs.ref.sarif-id }}
+runs:
+  using: "composite"
+  steps:
+  - name: Shim SARIF
+    id: shim-sarif
+    if: (success() || (failure() && env.MERGE_FAILED != '1')) && env.UPLOAD_SARIF != '' && env.PRIVATE_SARIF_SHA != ''
+    shell: bash
+    working-directory: ${{ inputs.check-spelling-working-directory }}
+    run: |
+      : Shim SARIF
+      git reset "$PRIVATE_SARIF_SHA"
+  - name: Upload SARIF
+    id: action
+    continue-on-error: true
+    uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+    with:
+      category: ${{ inputs.category }}
+      checkout_path: ${{ inputs.checkout_path }}
+      matrix: ${{ inputs.matrix }}
+      ref: ${{ inputs.ref }}
+      sarif_file: ${{ inputs.sarif_file }}
+      sha: ${{ inputs.sha }}
+      token: ${{ inputs.token }}
+      wait-for-processing: ${{ inputs.wait-for-processing }}
