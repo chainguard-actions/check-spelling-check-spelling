@@ -1,0 +1,686 @@
+name: "Check Spelling"
+description: "Spell check code and commits"
+author: "jsoref"
+branding:
+  icon: "edit-3"
+  color: "red"
+inputs:
+  GITHUB_TOKEN:
+    description: "The GITHUB_TOKEN secret"
+    default: "${{ github.token }}"
+    required: false
+  bucket:
+    description: "Container for spelling configuration"
+    required: false
+  project:
+    description: "Folder/Branch within bucket containing spelling configuration"
+    required: false
+  config:
+    description: "Spelling configuration directory"
+    default: ".github/actions/spelling"
+    required: false
+  experimental_path:
+    description: "Directory root to check for spelling (note that bucket/project/config are independent of this)"
+    default: "."
+    required: false
+  dictionary_url:
+    description: "Location of dictionary (if you aren't providing one in your repository)"
+    default: "https://raw.githubusercontent.com/check-spelling/check-spelling/dictionary-$DICTIONARY_VERSION/dict.txt"
+    required: false
+  dictionary_version:
+    description: "Version of the dictionary (only used if the url includes $DICTIONARY_VERSION)"
+    default: "20200211"
+    required: false
+  debug:
+    description: "Debug"
+    required: false
+  experimental_apply_changes_via_bot:
+    description: "(Experimental) Allow users to quote-reply to the bot comment to update the PR"
+    default: "0"
+    required: false
+  experimental_parallel_jobs:
+    description: "Number of CPUs available for running checks (defaults to number of processors)"
+    required: false
+  post_comment:
+    description: "Post comment with report"
+    required: false
+    default: "0"
+  capture_output_unknown_words:
+    description: ""
+    required: false
+    deprecationMessage: "Obsolete: outputs are always captured"
+    default: ""
+  capture_output_stale_words:
+    description: ""
+    deprecationMessage: "Obsolete: outputs are always captured"
+    required: false
+    default: ""
+  capture_output_skipped_files:
+    description: ""
+    deprecationMessage: "Obsolete: outputs are always captured"
+    required: false
+    default: ""
+  allow-hunspell:
+    description: "Allow hunspell dictionaries (.dic + .aff)"
+    required: false
+    default: "1"
+  dictionary_source_prefixes:
+    description: "JSON map of prefixes for dictionary urls"
+    required: false
+    default: '{"cspell": "https://raw.githubusercontent.com/check-spelling/cspell-dicts/v20230509/dictionaries/"}'
+  extra_dictionaries:
+    description: "Space delimited list of URLs (or `prefix:`+path) to additional word lists"
+    required: false
+    default: ""
+  check_extra_dictionaries:
+    description: "Compare unknown tokens against these dictionaries and suggest if applicable"
+    required: false
+    default: |
+      cspell:ada/dict/ada.txt
+      cspell:aws/aws.txt
+      cspell:clojure/src/clojure.txt
+      cspell:companies/src/companies.txt
+      cspell:cpp/src/compiler-clang-attributes.txt
+      cspell:cpp/src/compiler-gcc.txt
+      cspell:cpp/src/compiler-msvc.txt
+      cspell:cpp/src/ecosystem.txt
+      cspell:cpp/src/lang-jargon.txt
+      cspell:cpp/src/lang-keywords.txt
+      cspell:cpp/src/people.txt
+      cspell:cpp/src/stdlib-c.txt
+      cspell:cpp/src/stdlib-cerrno.txt
+      cspell:cpp/src/stdlib-cmath.txt
+      cspell:cpp/src/stdlib-cpp.txt
+      cspell:cpp/src/template-strings.txt
+      cspell:cryptocurrencies/cryptocurrencies.txt
+      cspell:csharp/csharp.txt
+      cspell:css/dict/css.txt
+      cspell:dart/src/dart.txt
+      cspell:django/dict/django.txt
+      cspell:django/requirements.txt
+      cspell:docker/src/docker-words.txt
+      cspell:dotnet/dict/dotnet.txt
+      cspell:elixir/dict/elixir.txt
+      cspell:filetypes/filetypes.txt
+      cspell:fonts/fonts.txt
+      cspell:fullstack/dict/fullstack.txt
+      cspell:gaming-terms/dict/gaming-terms.txt
+      cspell:golang/dict/go.txt
+      cspell:haskell/dict/haskell.txt
+      cspell:html/dict/html.txt
+      cspell:java/src/java-terms.txt
+      cspell:java/src/java.txt
+      cspell:k8s/dict/k8s.txt
+      cspell:latex/dict/latex.txt
+      cspell:latex/samples/sample-words.txt
+      cspell:lisp/lisp.txt
+      cspell:lorem-ipsum/dictionary.txt
+      cspell:lua/dict/lua.txt
+      cspell:mnemonics/src/mnemonics.txt
+      cspell:monkeyc/src/monkeyc_keywords.txt
+      cspell:node/dict/node.txt
+      cspell:npm/dict/npm.txt
+      cspell:php/dict/php.txt
+      cspell:powershell/dict/powershell.txt
+      cspell:public-licenses/src/additional-licenses.txt
+      cspell:public-licenses/src/generated/public-licenses.txt
+      cspell:python/src/additional_words.txt
+      cspell:python/src/common/extra.txt
+      cspell:python/src/python/python-lib.txt
+      cspell:python/src/python/python.txt
+      cspell:r/src/r.txt
+      cspell:redis/dict/redis.txt
+      cspell:ruby/dict/ruby.txt
+      cspell:rust/dict/rust.txt
+      cspell:scala/dict/scala.txt
+      cspell:shell/dict/shell-all-words.txt
+      cspell:software-terms/dict/softwareTerms.txt
+      cspell:software-terms/dict/webServices.txt
+      cspell:sql/src/sql.txt
+      cspell:sql/src/tsql.txt
+      cspell:svelte/dict/svelte.txt
+      cspell:swift/src/swift.txt
+      cspell:typescript/dict/typescript.txt
+  extra_dictionary_limit:
+    description: "Limit the number of suggested extra dictionaries."
+    required: false
+    default: "5"
+  event_aliases:
+    description: >-
+      Try to treat a GitHub event "a" as GitHub event "b" (JSON map). If this flag was available before this tool recognized `pull_request_target`, `{"pull_request_target":"pull_request"}` would have mapped it to `pull_request`.
+    required: false
+    default: ""
+  shortest_word:
+    description: "Shortest word"
+    required: false
+    default: "3"
+  longest_word:
+    description: "Longest word"
+    required: false
+    default: ""
+  experimental_commit_note:
+    description: "If set, commit updates to expect automatically with this note"
+    required: false
+    default: ""
+  suppress_push_for_open_pull_request:
+    description: "If set, do not do work in response to `push` if there is an open `pull` request to the repository for the branch (this assumes there's a `pull_request_target` event configured)."
+    required: false
+    default: ""
+  report_title_suffix:
+    description: "Suffix for report title (useful if you are using a matrix strategy or are using experimental_path)"
+    required: false
+    default: ""
+  only_check_changed_files:
+    description: "If set, only check files changed since the last push"
+    required: false
+    default: ""
+  internal_state_directory:
+    description: "Used for passing internal state from the (default) check mode to the comment module"
+    required: false
+    default: ""
+  check_file_names:
+    description: "Spell check file paths"
+    required: false
+    default: ""
+  check_commit_messages:
+    description: "List of extra text to check (latest `commit` message, messages for pending `commits`, PR `title`, PR `description`)"
+    required: false
+    default: ""
+  anonymize_secpoll_source:
+    description: "Perform secpoll queries via a public dns server"
+    required: false
+    default: ""
+  ignore_security_advisory:
+    description: "Set to the value of the current security advisory to accept the reported risk -- value must match -- do not set if there is no current advisory"
+    required: false
+    default: ""
+  largest_file:
+    description: "File size limit"
+    required: false
+    default: "1048576"
+  unknown_word_limit:
+    description: "Only report an unknown word this many times"
+    required: false
+    default: "5"
+  unknown_file_word_limit:
+    description: "Only report an unknown word in file paths this many times"
+    required: false
+    default: "10"
+  errors:
+    description: "List of events to treat as errors"
+    required: false
+    default: ""
+  warnings:
+    description: "List of events to treat as warnings"
+    required: false
+    default: bad-regex,binary-file,deprecated-feature,ignored-expect-variant,large-file,limited-references,no-newline-at-eof,noisy-file,non-alpha-in-dictionary,single-line-file,token-is-substring,unexpected-line-ending,minified-file,unsupported-configuration
+  notices:
+    description: "List of events to treat as notices"
+    required: false
+    default: candidate-pattern,unused-config-file
+  ignored:
+    description: "List of events to ignore"
+    required: false
+    default: ""
+  quit_without_error:
+    description: "Suppress failure code exit code -- it will be available via outputs.result_code"
+    required: false
+    default: ""
+  spell_check_this:
+    description: "Repository with default configuration to use if no configuration is found in a .github/actions/spelling directory"
+    required: false
+    default: ""
+  ssh_key:
+    description: "Key for checking out / pushing to updates (and trigger workflow cascades)"
+    required: false
+    default: ""
+  checkout:
+    description: "Whether to check out a repository"
+    required: false
+    default: ""
+  task:
+    description: "Task to perform (spelling, comment, ...)"
+    required: false
+    default: ""
+  disable_checks:
+    description: "Some heuristics might not do what you want, it may be possible to suppress them"
+    required: false
+    default: ""
+  alternate_engine:
+    description: "Alternate engine to use"
+    required: false
+    default: ""
+  alternate_engine_key:
+    description: "ssh key to retrieve alternate engine"
+    required: false
+    default: ""
+  use_sarif:
+    description: "Publish SARIF report"
+    required: false
+    default: ""
+  use_magic_file:
+    description: "Use magic file to skip binary files"
+    required: false
+    default: "1"
+  caller_container:
+    description: "Hack for nektos/act - pass the outputs.docker_container to give check-spelling a way to retrieve data it needs to report a comment"
+    required: false
+  candidate_example_limit:
+    description: "Control the number of examples shown for candidate patterns"
+    required: false
+    default: "3"
+  summary_table:
+    description: "Provide item table (paths, content)"
+    required: false
+    default: "1"
+  ignore-pattern:
+    description: "Word Splitter Ignore Pattern"
+    required: false
+    default: "[^a-zA-Z']"
+  upper-pattern:
+    description: "Word Splitter Upper Pattern"
+    required: false
+    default: "[A-Z]"
+  lower-pattern:
+    description: "Word Splitter Lower Pattern"
+    required: false
+    default: "[a-z]"
+  not-lower-pattern:
+    description: "Word Splitter Not Lower Pattern"
+    required: false
+    default: "[^a-z]"
+  not-upper-or-lower-pattern:
+    description: "Word Splitter Not Upper or Lower Pattern"
+    required: false
+    default: "[^A-Za-z]"
+  punctuation-pattern:
+    description: "Word Splitter Punctuation Pattern"
+    required: false
+    default: "'"
+  check-homoglyphs:
+    description: "Check for homoglyphs"
+    required: false
+    default: "1"
+  report-timing:
+    description: "Report processing time for files"
+    required: false
+    default: ""
+  unrecognized-words-before-collapsing:
+    description: "Control how many unrecognized words can be displayed without wrapping in a collapsed widget"
+    required: false
+    default: "10"
+  sarif-token:
+    description: "Token for use with github/codeql-action/upload-sarif"
+    required: false
+  checkout-token:
+    description: "Token for use with actions/checkout (the default is to use the github.token)"
+    required: false
+  wait-for-sarif-processing:
+    description: "Wait for GitHub Advanced Security to process SARIF output"
+    required: false
+    default: "false"
+  include-advice:
+    description: "When to include advice (`always`, has `error`, has `unrecognized-spelling`, could update `metadata`)"
+    required: false
+    default: "metadata"
+  always-report-comment:
+    description: "Post comments for warnings and notices"
+    required: false
+    default: "false"
+  word-splitter-timeout:
+    description: "Per file spell checking time limit"
+    required: false
+    default: "30"
+  check-images:
+    description: "Use tesseract to OCR pictures and check them"
+    required: false
+    default: "false"
+  submodules:
+    description: "Check sub-repositories (with `checkout` this will automatically check out subrepositories, without it assumes they're already checked out)"
+    required: false
+    default: ""
+  ignore-next-line:
+    description: "Pattern to cause next line to be ignored"
+    required: false
+  load-config-from:
+    description: "Map for fields to load from config.json"
+    required: false
+    default: |
+      {
+        "pr-base-keys": [
+          ""
+        ],
+        "pr-trusted-keys": [
+          ""
+        ],
+        "": []
+      }
+outputs:
+  unknown_words:
+    description: "Unrecognized words (should be added to expect.txt)"
+    value: ${{ steps.spelling.outputs.unknown_words }}
+  stale_words:
+    description: "Stale words (should be removed from expect.txt) as an output"
+    value: ${{ steps.spelling.outputs.stale_words }}
+  skipped_files:
+    description: "Skipped files (could be added to excludes.txt)"
+    value: ${{ steps.spelling.outputs.skipped_files }}
+  suggested_dictionaries:
+    description: "Suggested dictionaries (could be added to extra_dictionaries)"
+    value: ${{ steps.spelling.outputs.suggested_dictionaries }}
+  warnings:
+    description: "Warnings"
+    value: ${{ steps.spelling.outputs.warnings }}
+  internal_state_directory:
+    description: "Used for passing internal state from the (default) check mode to the comment module"
+    value: ${{ steps.spelling.outputs.internal_state_directory }}
+  result_code:
+    description: "Result (indicates unrecognized words were found or comment needs to be collapsed)"
+    value: ${{ steps.spelling.outputs.result_code }}
+  followup:
+    description: "Next task"
+    value: ${{ steps.spelling.outputs.followup }}
+  docker_container:
+    description: "Hack for nektos/act - pass to inputs.caller_container to give check-spelling a way to retrieve data it needs to report a comment"
+    value: ${{ steps.spelling.outputs.docker_container }}
+runs:
+  using: "composite"
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: Check act
+      if: env.ACT && (github.action_path || env.GITHUB_ACTION_PATH) && (env.GITHUB_ACTION_PATH != github.action_path)
+      shell: bash
+      run: |
+        : Warn about broken versions of act
+        echo '::error ::This version of nektos/act is broken. See https://docs.check-spelling.dev/Breaking-Change:-Dropping-support-for-broken-act'
+        exit 1
+    - name: Shim act for Windows
+      if: runner.os == 'Windows' && env.ACT
+      shell: bash
+      run: |
+        : Try to help act on Windows
+        THIS_ACTION_PATH=$(realpath "$GITHUB_ACTION_PATH")
+        chmod +x $THIS_ACTION_PATH/*.sh $THIS_ACTION_PATH/*.pl $THIS_ACTION_PATH/wrappers/*
+        perl -pi -e's/\015\012/\012/g' $THIS_ACTION_PATH/*.sh $THIS_ACTION_PATH/*.pl $THIS_ACTION_PATH/wrappers/*
+    - name: Parse alternate engine
+      id: parse-alternate-engine
+      if: inputs.alternate_engine
+      shell: bash
+      env:
+        ALTERNATE_ENGINE: ${{ inputs.alternate_engine }}
+      run: |
+        : Set up alternate engine
+        repo=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r' | perl -pe 's/\@.*//')
+        branch=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r' | perl -ne 'next unless s/.*\@//; print')
+        echo "repo=$repo" >> "$GITHUB_OUTPUT"
+        echo "branch=$branch" >> "$GITHUB_OUTPUT"
+    - name: Shim path and local actions
+      shell: bash
+      run: |
+        : Shim path and local actions
+        THIS_ACTION_PATH=$(realpath "$GITHUB_ACTION_PATH")
+        (
+          echo "THIS_ACTION_PATH=$THIS_ACTION_PATH"
+          echo "spellchecker=$THIS_ACTION_PATH"
+        ) >> "$GITHUB_ENV"
+        if ! ln -s "$THIS_ACTION_PATH"/actions ../check-spelling-actions; then
+          mkdir -p ../check-spelling-actions
+          cp -R "$THIS_ACTION_PATH"/actions/ ../check-spelling-actions/
+        fi
+        echo "$THIS_ACTION_PATH/wrappers" >> "$GITHUB_PATH"
+        safe_job_id=$(printf '%s' "$THIS_GITHUB_JOB_ID" | tr -d '\n\r')
+        echo "THIS_GITHUB_JOB_ID=$safe_job_id" >> "$GITHUB_ENV"
+      env:
+        THIS_GITHUB_JOB_ID: ${{ github.job }}
+    - name: Check actions
+      id: check-actions
+      env:
+        GH_ACTION_REPOSITORY: ${{ github.action_repository || github.repository }}
+        GH_ACTION_REF: ${{ github.action_ref || github.ref_name }}
+      shell: bash
+      run: |
+        secpoll
+    - name: Retrieve alternate engine
+      if: inputs.alternate_engine
+      uses: ./../check-spelling-actions/checkout
+      with:
+        show-progress: false
+        path: alternate-engine
+        repository: ${{ steps.parse-alternate-engine.outputs.repo }}
+        ref: ${{ steps.parse-alternate-engine.outputs.branch }}
+        ssh-key: ${{ inputs.alternate_engine_key }}
+        persist-credentials: false
+    - name: Install alternate engine
+      if: inputs.alternate_engine
+      shell: bash
+      run: |
+        : Install alternate engine
+        rsync --delete --exclude=.git -a alternate-engine/ "$GITHUB_ACTION_PATH"/
+        rsync --delete -a alternate-engine/actions/ ../check-spelling-actions/
+        rm -rf alternate-engine/
+    - name: Check actions (for alternate engine)
+      if: inputs.alternate_engine
+      id: alternate-check-actions
+      shell: bash
+      env:
+        GH_ACTION_REPOSITORY: ${{ github.action_repository || github.repository }}
+        GH_ACTION_REF: ${{ github.action_ref || github.ref_name }}
+      run: |
+        secpoll
+    - name: Checkout
+      id: checkout
+      if: inputs.checkout && fromJSON(inputs.checkout)
+      uses: ./../check-spelling-actions/checkout
+      with:
+        show-progress: false
+        path: ${{ inputs.experimental_path }}
+        ssh-key: ${{ inputs.ssh_key }}
+        fetch-depth: ${{ case(contains(inputs.check_commit_messages, 'commits'), '2147483647', '1') }}
+        filter: ${{ case(contains(inputs.check_commit_messages, 'commits'), 'tree:0', '') }}
+        token: ${{ inputs.checkout-token || inputs.GITHUB_TOKEN }}
+        submodules: ${{ inputs.submodules }}
+        ref: >
+          ${{ case(
+
+              inputs.task == 'comment' && !!github.event.issue.pull_request,
+              github.event.pull_request.base.sha,
+              github.event_name == 'issue_comment' && !!github.event.issue.pull_request,
+              github.event.pull_request.head.sha,
+              ''
+              )
+          }}
+
+    - name: Report if checkout failed
+      if: steps.checkout.outputs.outcome == 'failure'
+      shell: bash
+      env:
+        ssh_key: ${{ inputs.ssh_key }}
+        ssh_account: git@github.com
+        GH_TOKEN: ${{ github.token }}
+        CHECKOUT_TOKEN: ${{ inputs.checkout-token }}
+        checkout_out: ${{ steps.checkout.outputs.output-file }}
+        checkout_err: ${{ steps.checkout.outputs.error-file }}
+      run: |
+        diagnose-failed-checkout
+    - name: Checkout merge
+      id: checkout-merge
+      if: github.event.pull_request.number && (contains(github.event_name, 'pull_request')) && (inputs.checkout && fromJSON(inputs.checkout) && !inputs.task)
+      uses: ./../check-spelling-actions/checkout-merge
+      with:
+        path: ${{ inputs.experimental_path }}
+    - name: Clear credentials
+      if: ${{ steps.checkout.outputs.outcome == 'success' && !(toJSON(inputs.experimental_apply_changes_via_bot || 'false') && github.event_name == 'issue_comment') }}
+      shell: bash
+      working-directory: ${{ inputs.experimental_path }}
+      run: |
+        remove-persisted-credentials
+    - name: Save SHA
+      id: save-sha
+      if: (contains(github.event_name, 'pull_request')) && (inputs.checkout && fromJSON(inputs.checkout) && !inputs.task) && steps.checkout-merge.outputs.message == ''
+      shell: bash
+      working-directory: ${{ inputs.experimental_path }}
+      env:
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        : Save SHA
+        if [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+          set -x
+        fi
+        git log -1 --one'line' HEAD
+        safe_pr_number=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
+        PRIVATE_CHECKOUT_REF="refs/pull/$safe_pr_number/merge"
+        if git ls-remote origin "$PRIVATE_CHECKOUT_REF" | grep -q . &&
+            git fetch origin "$PRIVATE_CHECKOUT_REF"; then
+          (
+            safe_ref=$(printf '%s' "$PRIVATE_CHECKOUT_REF" | tr -d '\n\r')
+            echo "PRIVATE_CHECKOUT_REF=$safe_ref"
+            echo "PRIVATE_SYNTHETIC_SHA=$(git rev-parse HEAD)"
+            echo "PRIVATE_MERGE_SHA=$(git rev-parse FETCH_HEAD)"
+          ) >> "$GITHUB_ENV"
+        else
+          echo "::warning ::$PRIVATE_CHECKOUT_REF is unavailable (missing-merge-head)"
+          echo "skip-upload=1" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Prepare
+      if: inputs.task && inputs.task != 'spelling' && (!env.ACT || github.token)
+      shell: bash
+      run: |
+        : Set up internal state directory
+        mkdir -p /tmp/data;
+        echo "INPUT_INTERNAL_STATE_DIRECTORY=/tmp/data" >> "$GITHUB_ENV"
+    - name: Retrieve comment
+      id: retrieve-comment
+      if: inputs.task && inputs.task != 'spelling' && (!env.ACT || github.token)
+      shell: bash
+      working-directory: /tmp/data
+      env:
+        GH_TOKEN: ${{ github.token }}
+        suffix: ${{ inputs.report_title_suffix }}
+      run: |
+        : Retrieve comment
+        "$spellchecker/gh-run-download.sh"
+        if [ ! -s artifact.zip ]; then
+          gh_api_out=$(mktemp)
+          gh_api_err=$(mktemp)
+          canary=$(mktemp)
+          (
+            if ! gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=1" > "$gh_api_out" 2> "$gh_api_err"; then
+              if grep -q 'HTTP 403' "$gh_api_err"; then
+                act-summary
+                if grep -q '#rate-limiting' "$gh_api_out"; then
+                  echo '# GitHub Rate limit hit'
+                  echo 'This generally happens when a repository triggers too many workflows in a short period of time. An admin or owner can rerun this workflow if necessary. Sorry about that.'
+                else
+                  echo '# Workflow is missing permissions'
+                  echo 'Please add `actions: read` to enable check-spelling to retrieve the artifact it needs to post a comment. [more info](https://docs.check-spelling.dev/Workflow-Permissions#actions-read)'
+                fi
+                echo
+                echo '#### Technical details'
+                echo '```'
+                cat "$gh_api_err"
+                cat "$gh_api_out"
+                echo
+                echo '```'
+                rm "$canary"
+              fi
+            fi
+            if [ -e "$canary" ]; then
+              echo '#### Could not find artifact'
+              echo "Artifact retrieval failed, please check the list of [known issues](https://github.com/check-spelling/check-spelling/issues?q=is%3Aissue%20retrieve-comment) and [file an issue](https://github.com/check-spelling/check-spelling/issues/new?title=%60retrieve-comment%60%20scenario&body=Please%20provide%20details+preferably%20including%20a%20link%20to%20a%20workflow%20run,%20the%20configuration%20of%20the%20repository,%20and%20anything%20else%20you%20may%20know%20about%20the%20problem%2e) if you can't find a related issue."
+            fi
+          ) >> "$GITHUB_STEP_SUMMARY"
+          echo "no-comment=1" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Run check-spelling
+      id: spelling
+      if: env.MERGE_FAILED != '1' && steps.retrieve-comment.outputs.no-comment != '1'
+      env:
+        INPUTS: ${{ toJSON(inputs) }}
+        DEBUG: ${{ inputs.debug }}
+        GH_ACTION_REPOSITORY: ${{ github.action_repository || github.repository }}
+        GH_ACTION_REF: ${{ github.action_ref || github.ref_name }}
+        JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
+      shell: bash
+      run: |
+        unknown-words
+    - name: Store comment
+      continue-on-error: true
+      if: env.MERGE_FAILED != '1' && inputs.task != 'comment' && steps.retrieve-comment.conclusion == 'skipped' && steps.spelling.outputs.internal_state_directory && !cancelled()
+      uses: ./../check-spelling-actions/upload-artifact
+      with:
+        name: ${{ case(inputs.report_title_suffix != '', format('{0}-{1}', 'check-spelling-comment', inputs.report_title_suffix), 'check-spelling-comment') }}
+        path: ${{ steps.spelling.outputs.internal_state_directory }}
+    - name: Store OCR
+      continue-on-error: true
+      if: steps.spelling.outputs.ocr_directory != ''
+      uses: ./../check-spelling-actions/upload-artifact
+      with:
+        name: ocr
+        path: ${{ steps.spelling.outputs.ocr_directory }}
+    - name: Publish SARIF artifact
+      continue-on-error: true
+      id: artifact-sarif
+      if: (success() || (failure() && env.MERGE_FAILED != '1')) && env.UPLOAD_SARIF != ''
+      uses: ./../check-spelling-actions/upload-artifact
+      with:
+        name: ${{ case(inputs.report_title_suffix != '', format('{0}-{1}', 'check-spelling-sarif', inputs.report_title_suffix), 'check-spelling-sarif') }}
+        retention-days: 1
+        path: ${{ env.UPLOAD_SARIF }}
+    - name: Report SARIF
+      continue-on-error: true
+      id: upload-sarif
+      if: (success() || (failure() && env.MERGE_FAILED != '1')) && env.UPLOAD_SARIF_LIMITED != '' && !steps.save-sha.outputs.skip-upload
+      uses: ./../check-spelling-actions/upload-sarif
+      with:
+        wait-for-processing: ${{ case(inputs.wait-for-sarif-processing != '', inputs.wait-for-sarif-processing, 'false') }}
+        sarif_file: ${{ env.UPLOAD_SARIF_LIMITED }}
+        category: ${{ case(inputs.report_title_suffix != '', format('{0}-{1}', 'check-spelling', inputs.report_title_suffix), 'check-spelling') }}
+        checkout_path: ${{ inputs.experimental_path }}
+        ref: ${{ env.PRIVATE_CHECKOUT_REF }}
+        sha: ${{ env.PRIVATE_MERGE_SHA }}
+        token: ${{ inputs.sarif-token || inputs.GITHUB_TOKEN }}
+        started-at: ${{ steps.spelling.outputs.started-at }}
+        analysis-key: ${{ steps.spelling.outputs.workflow-path }}:check-spelling
+      env:
+        trace: ${{ case((inputs.debug || github.run_attempt > 1) && true, '1', '') }}
+    - name: Report SARIF information in Github Step Summary
+      continue-on-error: true
+      if: (success() || (failure() && env.MERGE_FAILED != '1')) && (github.run_attempt > 1 || env.ACT || steps.upload-sarif.outcome == 'failure') && env.UPLOAD_SARIF_LIMITED != ''
+      shell: bash
+      run: ": Report SARIF information in Github Step Summary\n(\n  echo\n  echo '---'\n  echo\n  echo '<details><summary>\U0001F47C SARIF file</summary>'\n  echo\n  echo '```'\n  sarif_file_size=$(\n    case $(uname -s) in\n    *BSD*|Darwin)\n      stat -f %z \"$UPLOAD_SARIF_LIMITED\"\n      ;;\n    *)\n      stat -c %s \"$UPLOAD_SARIF_LIMITED\"\n      ;;\n    esac\n  )\n  sarif_file_limit=1000000\n  if [ $sarif_file_size -gt $sarif_file_limit ]; then\n    sarif_records=$(jq '.runs[0].results|length' \"$UPLOAD_SARIF_LIMITED\")\n    sarif_records_truncated=$(( $sarif_records * $sarif_file_limit / $sarif_file_size ))\n    jq -c \".runs[0].results = .runs[0].results[0:$sarif_records_truncated]\" \"$UPLOAD_SARIF_LIMITED\"\n  else\n    cat \"$UPLOAD_SARIF_LIMITED\"\n  fi\n  echo '```'\n  echo '</details>'\n) >> \"$GITHUB_STEP_SUMMARY\"\n"
+    - name: Report failure status because SARIF upload failed
+      shell: bash
+      if: ${{ steps.upload-sarif.conclusion != 'skipped' && !steps.upload-sarif.outputs.sarif-id && !(inputs.quit_without_error && fromJSON(inputs.quit_without_error)) && env.result_code && fromJSON(env.result_code) }}
+      run: |
+        : SARIF Upload failed to report. Report check-spelling failure.
+        exit $result_code
+    - name: Step Summary (act)
+      continue-on-error: true
+      if: (success() || failure()) && env.ACT_STEP_SUMMARY
+      shell: bash
+      run: |
+        : Act step summary
+        cd "$ACT_STEP_SUMMARY"
+        for a in $(ls | sort -n); do
+          if [ -s "$a" ]; then
+            echo "<!-- $a -->"
+            cat "$a"
+            echo
+          fi
+        done

@@ -1,0 +1,336 @@
+{
+"runs": [
+{
+"columnKind": "unicodeCodePoints",
+"tool": {
+"driver": {
+"name": "check-spelling",
+"isComprehensive": false,
+"shortDescription": {
+"markdown": "Action to check spelling in a repository. [check-spelling.dev](https://www.check-spelling.dev/)",
+"text": "Action to check spelling in a repository"
+},
+"fullDescription": {
+"markdown": "Action to check spelling in a repository. [check-spelling.dev](https://www.check-spelling.dev/)",
+"text": "Action to check spelling in a repository. Supports multiple dictionaries, patterns, exclusions, ... https://www.check-spelling.dev/"
+},
+"organization": "check-spelling",
+"product": "check-spelling",
+"informationUri": "https://github.com/check-spelling/check-spelling",
+"version": "0.0.0",
+"rules": [
+{
+"name": "UnrecognizedSpelling",
+"help": {
+"markdown": "**Remediation (click \"Show more\" below)**:\n\n- Correct spelling\n- Add to [expect](https://docs.check-spelling.dev/Configuration-Files#expect)\n- Add word to the [dictionary](https://docs.check-spelling.dev/Configuration-Files#allow)\n- Mask using [patterns](https://docs.check-spelling.dev/Configuration-Files#patterns)\n\n",
+"text": "?"
+},
+"helpUri": "https://docs.check-spelling.dev/Event-descriptions#unrecognized-spelling",
+"properties": {
+"problem.severity": "warning",
+"precision": "high",
+"tags": [
+"source-code",
+"code-reviews"
+]
+},
+"id": "unrecognized-spelling",
+"fullDescription": {
+"text": "Token is neither in the dictionary nor expected"
+},
+"shortDescription": {
+"text": "Unrecognized Spelling"
+},
+"defaultConfiguration": {
+"level": "warning"
+}
+},
+{
+"defaultConfiguration": {
+"level": "error"
+},
+"fullDescription": {
+"text": "Forbidden pattern matched this text"
+},
+"help": {
+"markdown": "**Remediation (click \"Show more\" below)**:\n\n- Alter text so the pattern does not match\n- Add a [pattern](https://docs.check-spelling.dev/Configuration-Files#patterns) to patterns.txt that matches (a portion of) the flagged content to accept it\n- Delete, edit, or comment out the pattern\n\n",
+"text": "?"
+},
+"helpUri": "https://docs.check-spelling.dev/Event-descriptions#forbidden-pattern",
+"id": "forbidden-pattern",
+"name": "ForbiddenPattern",
+"properties": {
+"precision": "high",
+"problem.severity": "error",
+"tags": [
+"source-code",
+"code-reviews"
+]
+},
+"shortDescription": {
+"text": "Forbidden Pattern"
+}
+},
+{
+"fullDescription": {
+"text": "Unfortunately the rule definition for an event hasn't been written. This is a bug in check-spelling."
+},
+"helpUri": "https://docs.check-spelling.dev/Event-descriptions#missing-rule-definition",
+"help": {
+"markdown": "**Remediation (click \"Show more\" below)**:\n- You should never see this. Please file a bug (including your sarif.json).\n\n",
+"text": "?"
+},
+"id": "missing-rule-definition",
+"name": "MissingRuleDefinition",
+"shortDescription": {
+"text": "Missing Rule Definition"
+}
+}
+]
+}
+},
+"automationDetails": {
+"id": "check-spelling/test"
+},
+"versionControlProvenance": [
+{
+"mappedTo": {
+"uriBaseId": "%SRCROOT%"
+},
+"branch": "expected-branch-name",
+"revisionId": "7070707070707070707070707070707070707070",
+"repositoryUri": "http://localhost"
+}
+],
+"results": [
+{
+"locations": [
+{
+"physicalLocation": {
+"artifactLocation": {
+"uri": "t/sarif/forbidden.txt",
+"uriBaseId": "%SRCROOT%"
+},
+"region": {
+"endColumn": 18,
+"startColumn": 17,
+"startLine": 11
+}
+}
+}
+],
+"message": {
+"text": "[a](#security-tab) matches a line_forbidden.patterns rule: Should be 'an' - '\\(?<=\\\\\\s\\)a\\(?= \\(?:a\\(?!nd\\\\\\s|s\\\\\\s\\)|e\\(?!u\\)|i\\(?!\\[ns\\]\\\\\\s\\)|o\\(?!nc?e\\)|u\\(?!biquitous|int|kr|n\\[ai\\]|r\\[ael\\]|s\\[aeiu'…"
+},
+"ruleId": "forbidden-pattern"
+},
+{
+"message": {
+"text": "imaginary rule"
+},
+"locations": [
+{
+"physicalLocation": {
+"artifactLocation": {
+"uri": "t/sarif/sample.txt",
+"uriBaseId": "%SRCROOT%"
+},
+"region": {
+"endColumn": 4,
+"startColumn": 2,
+"startLine": 9
+}
+}
+}
+],
+"ruleId": "missing-rule-definition"
+},
+{
+"locations": [
+{
+"physicalLocation": {
+"region": {
+"startLine": 10,
+"startColumn": 5,
+"endColumn": 10
+},
+"artifactLocation": {
+"uriBaseId": "%SRCROOT%",
+"uri": "t/sarif/other.txt"
+}
+}
+}
+],
+"ruleId": "unrecognized-spelling",
+"message": {
+"text": "[ a](#security-tab) matches pattern '\\\\\\sa\\(?= \\(something\\)\\)'"
+}
+},
+{
+"partialFingerprints": {
+"cs0": "BvY2BKM5lxpHEJdKillpqiWZ3mo"
+},
+"message": {
+"text": "[je'ep](#security-tab) is not a recognized word"
+},
+"ruleId": "unrecognized-spelling",
+"locations": [
+{
+"physicalLocation": {
+"artifactLocation": {
+"uriBaseId": "%SRCROOT%",
+"uri": "t/sarif/sample.txt"
+},
+"region": {
+"endColumn": 11,
+"startLine": 8,
+"startColumn": 6
+}
+}
+}
+]
+},
+{
+"message": {
+"text": "[meep](#security-tab) is not a recognized word"
+},
+"locations": [
+{
+"physicalLocation": {
+"region": {
+"endColumn": 28,
+"startColumn": 24,
+"startLine": 1
+},
+"artifactLocation": {
+"uri": "t/sarif/sample.txt",
+"uriBaseId": "%SRCROOT%"
+}
+}
+}
+],
+"ruleId": "unrecognized-spelling"
+},
+{
+"message": {
+"text": "[meep](#security-tab) is not a recognized word"
+},
+"locations": [
+{
+"physicalLocation": {
+"region": {
+"startLine": 1,
+"startColumn": 30,
+"endColumn": 34
+},
+"artifactLocation": {
+"uri": "t/sarif/sample.txt",
+"uriBaseId": "%SRCROOT%"
+}
+}
+}
+],
+"ruleId": "unrecognized-spelling"
+},
+{
+"partialFingerprints": {
+"cs0": "+FpQY0W/k7oLflcAHsuRPiSuDIY"
+},
+"ruleId": "unrecognized-spelling",
+"message": {
+"text": "[meep](#security-tab) is not a recognized word"
+},
+"locations": [
+{
+"physicalLocation": {
+"artifactLocation": {
+"uriBaseId": "%SRCROOT%",
+"uri": "t/sarif/sample.txt"
+},
+"region": {
+"endColumn": 5,
+"startColumn": 1,
+"startLine": 2
+}
+}
+}
+]
+},
+{
+"message": {
+"text": "[mibbit](#security-tab) is not a recognized word"
+},
+"locations": [
+{
+"physicalLocation": {
+"artifactLocation": {
+"uri": "t/sarif/sample.txt",
+"uriBaseId": "%SRCROOT%"
+},
+"region": {
+"startColumn": 1,
+"startLine": 5,
+"endColumn": 7
+}
+}
+}
+],
+"ruleId": "unrecognized-spelling",
+"partialFingerprints": {
+"cs0": "bWBeHF6ti9VRxR+ic53fyRI48IQ"
+}
+},
+{
+"partialFingerprints": {
+"cs0": "UfygTwuHtOK2E0r5rpnyee9KTC8"
+},
+"ruleId": "unrecognized-spelling",
+"message": {
+"text": "[mibbit](#security-tab) is not a recognized word"
+},
+"locations": [
+{
+"physicalLocation": {
+"artifactLocation": {
+"uriBaseId": "%SRCROOT%",
+"uri": "t/sarif/sample.txt"
+},
+"region": {
+"endColumn": 7,
+"startColumn": 1,
+"startLine": 7
+}
+}
+}
+]
+},
+{
+"locations": [
+{
+"physicalLocation": {
+"artifactLocation": {
+"uriBaseId": "%SRCROOT%",
+"uri": "t/sarif/code.sh"
+},
+"region": {
+"endColumn": 21,
+"startLine": 2,
+"startColumn": 7
+}
+}
+}
+],
+"message": {
+"text": "No rule definition for `imaginary-rule`"
+},
+"ruleId": "missing-rule-definition"
+}
+]
+}
+],
+"$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+"properties": {
+"comment": "check-spelling test"
+},
+"version": "2.1.0"
+}

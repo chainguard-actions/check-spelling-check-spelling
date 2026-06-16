@@ -1,0 +1,4211 @@
+#!/bin/bash
+# This CI acceptance test is based on:
+# https://github.com/jsoref/spelling/tree/04648bdc63723e5cdf5cbeaff2225a462807abc8
+# It is conceptually `f` which runs `w` (spelling-unknown-word-splitter)
+# plus `fchurn` which uses `dn` mostly rolled together.
+set -e
+
+if [ -z "$THIS_ACTION_PATH$spellchecker" ]; then
+  export THIS_ACTION_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
+fi
+export spellchecker="${spellchecker:-$THIS_ACTION_PATH}"
+
+basic_setup() {
+  if [ -z "$GITHUB_ENV" ]; then
+    export GITHUB_EVENT_PATH=$(mktemp)
+    echo '{}' > "$GITHUB_EVENT_PATH"
+
+    maybe_set_env() {
+      if [ -z "$(eval echo '$'"$1")" ]; then
+        eval $1="$2"
+      fi
+    }
+    maybe_set_env GITHUB_EVENT_NAME push
+    maybe_set_env GITHUB_ENV /dev/stderr
+    maybe_set_env GITHUB_STEP_SUMMARY /dev/stderr
+  fi
+
+  if ! command -v act-summary > /dev/null; then
+    PATH="$spellchecker/wrappers:$PATH"
+  fi
+  if [ "$(id -u)" != 0 ]; then
+    SUDO=sudo
+  else
+    act-summary
+  fi
+
+  . "$spellchecker/common.sh"
+}
+
+workflow_skipped() {
+  echo "# ⏭️ Workflow skipped$N$@" >> "$GITHUB_STEP_SUMMARY"
+  exit 0
+}
+
+report_cached_warning_output() {
+  warning_output="$(mktemp)"
+  (
+    warning_output_unsorted="$data_dir/warning_output_unsorted.txt"
+    if [ -s "$warning_output_unsorted" ]; then
+      cat "$data_dir/warning_output_unsorted.txt" >> "$early_warnings"
+    fi
+  )
+  cat /dev/null |
+    warning_output="$warning_output" \
+    counter_summary="$counter_summary_file" \
+    candidate_summary="$candidate_summary" \
+    early_warnings="$early_warnings" \
+    "$word_collator" |\
+    "$strip_word_collator_suffix" > "$run_output"
+  cat "$warning_output"
+}
+
+dispatcher() {
+  if [ -n "$INPUT_EVENT_ALIASES" ]; then
+    GITHUB_EVENT_NAME="$(echo "$INPUT_EVENT_ALIASES" | jq -r ".$GITHUB_EVENT_NAME // $Q$GITHUB_EVENT_NAME$Q")"
+  fi
+  case "$INPUT_TASK" in
+    '')
+      ;;
+    comment|collapse_previous_comment)
+      if ! to_boolean "$INPUT_POST_COMMENT"; then
+        INPUT_POST_COMMENT=1
+      fi
+      comment_task
+    ;;
+    pr_head_sha)
+      pr_head_sha_task
+    ;;
+    *)
+      early_warning_count=$(line_count < "$early_warnings")
+      unrecognized_task_message='Error - Unsupported task `'$INPUT_TASK'` (unsupported-task)'
+      if [ -e "$workflow_path" ]; then
+        workflow_path_for_input_task="$workflow_path"
+      else
+        workflow_path_for_input_task="$INPUT_INTERNAL_STATE_DIRECTORY/workflow.yml"
+      fi
+      if [ -s "$workflow_path_for_input_task" ]; then
+        KEY="jobs$n$THIS_GITHUB_JOB_ID${n}steps${n}with${n}task" \
+        VALUE="$INPUT_TASK" \
+        MESSAGE="$unrecognized_task_message" \
+        file="$workflow_path" \
+        check_yaml_key_value "$workflow_path_for_input_task"
+      fi
+      if [ $early_warning_count == $(line_count < "$early_warnings") ]; then
+        echo "$workflow_path:0:0 ... 0, $unrecognized_task_message" >> "$early_warnings"
+      fi
+    ;;
+  esac
+  case "$GITHUB_EVENT_NAME" in
+    '')
+      (
+        echo 'check-spelling does not know what to do because GITHUB_EVENT_NAME is empty.'
+        echo
+        echo 'This could be because of a configuration error with event_aliases.'
+        echo 'It could be because you are using `act` or a similar GitHub Runner shim,'
+        echo 'and its configuration is incorrect.'
+      ) >&2
+      github_step_summary_likely_fatal \
+        'GITHUB_EVENT_NAME is empty' \
+        'Please see the log for more information.' \
+        'Is `event_aliases` misconfigured? Are you using `act` or a similar shim?'
+      exit 1
+      ;;
+    push)
+      if to_boolean "$INPUT_SUPPRESS_PUSH_FOR_OPEN_PULL_REQUEST"; then
+        if ! echo "$GITHUB_REPOSITORY" | grep -q '^..*/..*$'; then
+        (
+          echo '$GITHUB_REPOSITORY '"($GITHUB_REPOSITORY) does not appear to be an OWNER/REPOSITORY"
+          if [ -n "$ACT" ]; then
+            echo '[act] `git remote -v origin` is probably misconfigured'
+          fi
+          echo 'Cannot determine if there is an open pull request, proceeding as if there is not.'
+        ) >&2
+        elif ! echo "$GITHUB_API_URL" | grep -q '://'; then
+        (
+          echo '$GITHUB_API_URL '"($GITHUB_API_URL) does not appear to be a url"
+          if [ -n "$ACT" ]; then
+            echo '[act] is probably misconfigured'
+          fi
+          echo 'Cannot determine if there is an open pull request, proceeding as if there is not.'
+        ) >&2
+        elif [ "$(jq '.repository.has_pull_requests' "$GITHUB_EVENT_PATH")" == 'false' ]; then
+        (
+          echo 'Ignoring `suppress_push_for_open_pull_request` because pull requests are disabled'
+        ) >&2
+        else
+          pull_request_json="$(mktemp_json)"
+          pull_request_headers="$(mktemp)"
+          pull_heads_query="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%/*}:$GITHUB_REF"
+          keep_headers=1 call_curl \
+            "$pull_heads_query" > "$pull_request_json"
+          mv "$response_headers" "$pull_request_headers"
+          if [ -n "$(jq .documentation_url "$pull_request_json" 2>/dev/null)" ]; then
+            (
+              echo "Request for '$pull_heads_query' appears to have yielded an error, it is probably an authentication error."
+              if [ -n "$ACT" ]; then
+                echo '[act] If you want to use suppress_push_for_open_pull_request, you need to set GITHUB_TOKEN'
+              fi
+              echo "Headers:"
+              cat "$pull_request_headers"
+              echo "Response:"
+              cat "$pull_request_json"
+              echo 'Cannot determine if there is an open pull request, proceeding as if there is not.'
+            ) >&2
+          elif [ $(jq length "$pull_request_json") -gt 0 ]; then
+            if [ -f "$workflow_path" ] && [ -s "$workflow_path" ]; then
+              found_pull_request_file=1
+              pull_request_events=$(
+                yq -M '.on | keys' "$workflow_path" |
+                perl -ne 'next unless s/^-\s+(pull_request)/$1/; print'
+              )
+            else
+              found_pull_request_file=
+              pull_request_events=
+            fi
+            if [ -z "$found_pull_request_file" ] || [ -n "$pull_request_events" ]; then
+              (
+                open_pr_number="$(jq -r '.[0].number' "$pull_request_json")"
+                echo "Found [open PR #$open_pr_number]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$open_pr_number) - check-spelling should run there."
+                echo
+                pull_request_event_name=pull_request_target
+                if [ -n "$workflow_path" ]; then
+                  if ! echo "$pull_request_events" | grep -q pull_request_target ; then
+                    pull_request_event_name=pull_request
+                  fi
+                  workflow="workflow (${b}$workflow_path${b})"
+                  markdown_escaped_branch=$(perl -e 'my $branch=$ENV{GITHUB_REF_NAME}; $branch =~ s/([\\)])/\\$1/g; print $branch')
+                  workflow_run_link="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/$workflow_path?query=event:$pull_request_event_name+branch:$markdown_escaped_branch"
+                  prefix_workflow_link_text='['
+                  suffix_workflow_link_text="]($workflow_run_link)"
+                else
+                  workflow='workflow'
+                  workflow_run_link=''
+                  prefix_workflow_link_text=''
+                  suffix_workflow_link_text=''
+                fi
+                checks_link="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$open_pr_number/checks"
+                if [ -z "$pull_request_event_name" ]; then
+                  echo '::warning title=Could not check workflow for pull_request event::Please ensure there is an `on:` / `pull_request` or `on:` / `pull_request_target` in the running workflow (workflow-might-not-have-pull-request-event)'
+                  (
+                    echo '# 😕 Workflow might be missing pull_request event handler'
+                    echo 'The `suppress_push_for_open_pull_request` feature relies on the existence of either an `on:`/`pull_request` or `on:`/`pull_request_target`.'
+                    echo '... if neither are defined, then you will need to fix this workflow file.'
+                    echo 'Unfortunately, check-spelling could not identify the workflow file to ensure the presence of this event handler.'
+                    echo 'If you cannot find a corresponding job run for a pull_request or pull_request_target,'
+                    echo 'then you should fix the workflow to include one of these events.'
+                  ) >> "$GITHUB_STEP_SUMMARY"
+                fi
+                echo "::notice title=Workflow skipped::See ${b}check-spelling${b} ${b}$pull_request_event_name${b} $workflow in PR #$open_pr_number. $workflow_run_link $checks_link"
+                if [ -n "$ACT" ]; then
+                  matched_yaml_key_value=$(
+                    REPORT_MATCHING_YAML=1 \
+                    KEY=suppress_push_for_open_pull_request \
+                    VALUE="$INPUT_SUPPRESS_PUSH_FOR_OPEN_PULL_REQUEST" \
+                    file="$workflow_path" \
+                    check_yaml_key_value "$validate_workflow_path"
+                  )
+                  echo
+                  echo 'You appear to be running nektos/act, you should probably comment out:'
+                  echo
+                  echo "${matched_yaml_key_value:-"        suppress_push_for_open_pull_request: $INPUT_SUPPRESS_PUSH_FOR_OPEN_PULL_REQUEST"}"
+                fi
+                workflow_skipped "See $prefix_workflow_link_text${b}check-spelling${b} ${b}$pull_request_event_name${b} $workflow$suffix_workflow_link_text in PR [#$open_pr_number]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$open_pr_number).$n$n$checks_link"
+              ) >&2
+              exit 0
+            fi
+            KEY=suppress_push_for_open_pull_request \
+            VALUE="$INPUT_SUPPRESS_PUSH_FOR_OPEN_PULL_REQUEST" \
+            MESSAGE='Warning - Misconfigured workflow: missing on:/pull_request(_target) (missing-on-pull-request-event)' \
+            file="$workflow_path" \
+            check_yaml_key_value "$validate_workflow_path"
+            INPUT_SUPPRESS_PUSH_FOR_OPEN_PULL_REQUEST=''
+          fi
+        fi
+      fi
+      if [ -z "$INPUT_TASK" ]; then
+        INPUT_TASK=spelling
+      fi
+      ;;
+    pull_request|pull_request_target)
+      if [ -z "$INPUT_TASK" ]; then
+        INPUT_TASK=spelling
+      fi
+      if [ "$INPUT_TASK" = spelling ]; then
+        base_branch="${GITHUB_BASE_REF:-$GITHUB_REF_NAME}"
+        if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+          if [ "$(are_head_and_base_in_same_repo "$GITHUB_EVENT_PATH" '.pull_request')" != 'true' ]; then
+            api_output=$(mktemp)
+            api_error=$(mktemp)
+            description=$(jq -r '.event.repository.description // empty' "$GITHUB_ACTION_PATH" || true)
+            GH_TOKEN="$GITHUB_TOKEN" gh \
+              api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              -f "description=$description " \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY" > "$api_output" 2> "$api_error" || true
+            if ! grep -Eq 'not authorized|not accessible|"status":"422"' "$api_output"; then
+              GH_TOKEN="$GITHUB_TOKEN" gh \
+                api \
+                --method POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                -f "description=$description" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY" || true
+              cat "$api_output"
+              cat "$api_error"
+              if to_boolean "$INPUT_USE_SARIF"; then
+                INPUT_USE_SARIF=
+                set_up_reporter
+              fi
+            fi
+          fi
+          expected_workflow_path=$(get_workflow_path)
+          if [ -n "$expected_workflow_path" ] &&
+            [ ! -e "$expected_workflow_path" ]; then
+            base_branch="$(echo "$base_branch" | perl -pe 's/]/\\]/g')"
+            workflow_directory=$(dirname "$expected_workflow_path")
+            workflow_file=$(basename "$expected_workflow_path")
+            workflow_skipped 'This workflow is running on `pull_request_target` but the workflow is not present on the base branch.'"$n" \
+            'See [GitHub docs](https://github.com/github/docs/commit/bcff1fea9a3d7138e0707246e0ace5a3b183e33b) for some information about this feature from 2025-Dec.'"$n" \
+            "As the workflow (${b}$workflow_file${b}) is not present on the [branch]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$base_branch/$workflow_directory), it does not make sense to complain about the state of the world there."
+          fi
+        fi
+        if [ "$(jq -r '.pull_request.state // empty' "$GITHUB_EVENT_PATH")" == 'closed' ]; then
+          workflow_skipped 'It does not make sense to use check-spelling for closed pull requests.'"$N" \
+          "You can add an ${b}github.event.pull_request.state == 'open'${b} condition to the ${b}if:${b} for the ${b}job:${b} containing this action to suppress this message."
+        fi
+      fi
+      ;;
+    issue_comment)
+      if to_boolean "$DEBUG"; then
+        set -x
+      fi
+      if [ -z "$INPUT_TASK" ]; then
+        INPUT_TASK=update
+      fi
+      handle_comment
+      ;;
+    pull_request_review_comment)
+      body="$(echo '
+        If you are trying to ask @check-spelling-bot to update a PR,
+        please quote the comment link as a top level comment instead
+        of in a comment on a block of code.
+
+        Future versions may support this feature.
+        For the time being, early adopters should remove the
+        `pull_request_review_comment` event from their workflow.
+        workflow.
+      ' | strip_lead)"
+      ( echo 'check-spelling does not currently support comments on code.
+        '"$body" \
+        | strip_lead
+      ) >&2
+      github_step_summary_likely_fatal_event 'Handling comments on code is not supported by check-spelling' "$body" 'unsupported-configuration-review-comment'
+      quit 0
+      ;;
+    *)
+      body="$(echo "
+          check-spelling does not currently support the GitHub $b$GITHUB_EVENT_NAME$b event.
+
+          If you think it can, consider using:
+
+            with:
+              event_aliases: '{$Q$GITHUB_EVENT_NAME$Q:${Q}supported_event_name${Q}}'
+
+          Future versions may support this feature." \
+        | strip_leading 10
+      )"
+      echo "$body" >&2
+      github_step_summary_likely_fatal_event 'Unsupported event name' "$body" 'unsupported-configuration-event'
+      exit 1
+      ;;
+  esac
+}
+
+load_env() {
+  input_variables="$(mktemp)"
+  yaml_to_json="$spellchecker/yaml-to-json.pl"
+  if [ -z "$INPUTS" ] && [ -n "$workflow_path" ]; then
+    export INPUTS="$(
+      steps=$(
+        cat "$workflow_path" |
+          "$yaml_to_json" |
+          jq -rcM '.jobs.spelling.steps[]'
+      )
+      check_spelling_with=$(
+        echo "$steps" |
+        jq -rcM 'select(
+          (.uses | test ("/check-spelling@"))
+        )? |
+        .with'
+      )
+      if [ -z "$check_spelling_with" ]; then
+        check_spelling_with=$(
+          echo "$steps" |
+          jq -rcM 'select(
+            .id=="spelling"
+          )? | .with'
+        )
+      fi
+      echo "$check_spelling_with"
+    )"
+  fi
+  repository_and_workflow_path_without_ref=${GITHUB_WORKFLOW_REF%%@*}
+  private_workflow_path=${repository_and_workflow_path_without_ref#*/*/}
+  default_branch=$(jq -r '.repository.default_branch // empty' "$GITHUB_EVENT_PATH")
+  if [ "$GITHUB_EVENT_NAME" = 'pull_request_target' ]; then
+    if [ -n "$default_branch" ] &&
+      git fetch origin "$GITHUB_WORKFLOW_SHA:refs/private/workflow-ref" --depth 1; then
+      if [ -n "$private_workflow_path" ]; then
+        git show "refs/private/workflow-ref:$private_workflow_path" > "$retrieved_default_workflow_file" || true
+      fi
+    fi
+  fi
+  if [ ! -s "$retrieved_default_workflow_file" ] &&
+     [ -s "$private_workflow_path" ] &&
+     [ ! -L "$private_workflow_path" ]; then
+     cp "$private_workflow_path" "$retrieved_default_workflow_file"
+  fi
+  action_yml="$spellchecker/action.yml" "$spellchecker/wrappers/load-env" > "$input_variables"
+  . "$input_variables"
+}
+
+wrap_in_json() {
+  echo '{}' | jq -r --arg arg "$2" ".$1="'$arg'
+}
+
+wrap_file_in_json() {
+  echo '{}' | jq -r --rawfile arg "$2" ".$1="'$arg'
+}
+
+who_am_i() {
+  who_am_i='query { viewer { databaseId } }'
+  who_am_i_json="$(wrap_in_json 'query' "$who_am_i")"
+  comment_author_id=$(
+    call_curl \
+    "$GITHUB_GRAPHQL_URL" \
+    -H "Content-Type: application/json" \
+    --data-binary "$who_am_i_json" \
+    |
+    jq -r '.data.viewer.databaseId // empty'
+  )
+}
+
+get_is_comment_minimized() {
+  comment_is_collapsed_query="query { node(id:$Q$1$Q) { ... on IssueComment { minimizedReason } } }"
+  comment_is_collapsed_json="$(wrap_in_json 'query' "$comment_is_collapsed_query")"
+  call_curl \
+  "$GITHUB_GRAPHQL_URL" \
+  -H "Content-Type: application/json" \
+  --data-binary "$comment_is_collapsed_json" \
+  |
+  jq -r '.data.node.minimizedReason' 2>/dev/null
+}
+
+is_comment_minimized() {
+  [ "$(get_is_comment_minimized "$1")" != "null" ]
+}
+
+get_previous_comment() {
+  comment_search_re="$(title="$report_header" perl -e 'my $title=quotemeta($ENV{title}); $title=~ s/\\././g; print "(?:^|\n)$title";')"
+  get_a_comment "$comment_search_re" | head -1
+}
+
+get_a_comment() {
+  [ -z "$GITHUB_GRAPHQL_URL" ] && return
+  comment_search_re="$1"
+  if [ -z "$comment_author_id" ]; then
+    who_am_i
+  fi
+
+  # In English
+  # we're composing a list
+  #   but decomposing our input
+  #   selecting elements
+  #     if the user.login.id is our target user
+  #     and it isn't the comment we just posted...
+  #     and the body has our magic keyword (this requires some tuning for matrices)
+  #   from that element, we only want the node_id
+  # we want the last element
+  #   if there's no element, we want the empty string (not 'null')
+  jq_comment_query='[ .[] | select(. | (.user.id=='"${comment_author_id:-0}"') and (.node_id != "'"$posted_comment_node_id"'") and (.body | test ("'"$comment_search_re"'") ) ) | .node_id ] | .[-1] // empty'
+
+  get_page() {
+    url="$1"
+    dir="$2"
+    keep_headers=1 call_curl "$url" > "$pr_comments"
+    # Subset of rfc8288#section-3
+    link="$(get_link "$dir" "$response_headers")"
+    if [ -n "$link" ] && [ "$dir" = "last" ]; then
+      get_page "$link" "prev"
+      return
+    fi
+    if [ $response_code -ne 200 ]; then
+      (
+        echo "Unexpected response for $url"
+        cat "$response_headers"
+        echo
+        cat "$pr_comments"
+      ) >&2
+      return
+    fi
+    node_id="$(jq -r "$jq_comment_query" "$pr_comments")"
+    if [ -n "$node_id" ]; then
+      (
+        echo "$node_id"
+        get_is_comment_minimized "$node_id"
+      )
+      return
+    fi
+    if [ -n "$link" ]; then
+      get_page "$link" "prev"
+      return
+    fi
+  }
+
+  pr_comments="$(mktemp_json)"
+  get_page "$COMMENTS_URL" "last"
+  rm "$pr_comments"
+}
+
+get_comment_url_from_id() {
+  [ -z "$GITHUB_GRAPHQL_URL" ] && return
+  id="$1"
+  comment_url_from_id_query="query { node(id:$Q$id$Q) { ... on IssueComment { url } } }"
+  comment_url_from_id_json="$(wrap_in_json 'query' "$comment_url_from_id_query")"
+  call_curl \
+    "$GITHUB_GRAPHQL_URL" \
+    -H "Content-Type: application/json" \
+    --data-binary "$comment_url_from_id_json" \
+    |
+    jq -r '.data.node.url // empty'
+}
+
+comment_task() {
+  if [ -s "$data_dir"/drafted-comment.md ]; then
+    PAYLOAD="$data_dir"/drafted-comment.md
+    get_comment_url
+    post_commit_comment
+    quit_without_error=1
+    maybe_collapse_previous_comment_and_quit
+  fi
+  report_cached_warning_output
+  set_up_files
+  if [ -s "$severity_list" ]; then
+    q="$q" perl -pi -e '$_ = "" unless /^INPUT_[A-Z]+=$ENV{q}(?:\$\^|[-|a-z]+)$ENV{q}$/' "$severity_list"
+    . "$severity_list"
+  fi
+
+  if [ -n "$INPUT_INTERNAL_STATE_DIRECTORY" ]; then
+    if [ -z "$NEW_TOKENS" ]; then
+      NEW_TOKENS="$tokens_file"
+    fi
+    if [ -z "$STALE_TOKENS" ]; then
+      STALE_TOKENS="$INPUT_INTERNAL_STATE_DIRECTORY/remove_words.txt"
+    fi
+    if [ -s "$INPUT_INTERNAL_STATE_DIRECTORY/followup" ]; then
+      followup="$(cat "$INPUT_INTERNAL_STATE_DIRECTORY/followup")"
+      if [ "$followup" = "collapse_previous_comment" ]; then
+        previous_comment_node_id="$(cat "$data_dir/previous_comment.txt")"
+        if [ -n "$previous_comment_node_id" ]; then
+          collapse_comment "$previous_comment_node_id"
+          quit 0
+        fi
+      fi
+    fi
+  else
+    # This behavior was used internally and is not recommended.
+    # I hope to remove support for it relatively soon, as I don't think anyone
+    # externally picked up this flavor.
+    # check-spelling/spell-check-this never suggested it.
+    handle_mixed_archive() {
+      if [ -n "$1" ]; then
+        ls -d "$(dirname "$1")"/*/"$(basename "$1")" 2>/dev/null || echo "$1"
+      fi
+    }
+    NEW_TOKENS="$(handle_mixed_archive "$NEW_TOKENS")"
+    STALE_TOKENS="$(handle_mixed_archive "$STALE_TOKENS")"
+    NEW_EXCLUDES="$(handle_mixed_archive "$NEW_EXCLUDES")"
+    SUGGESTED_DICTIONARIES="$(handle_mixed_archive "$SUGGESTED_DICTIONARIES")"
+  fi
+  touch "$diff_output"
+
+  if [ -s "$NEW_TOKENS" ]; then
+    patch_add="$NEW_TOKENS"
+  fi
+  if [ -s "$STALE_TOKENS" ]; then
+    patch_remove="$STALE_TOKENS"
+  fi
+  if [ -f "$NEW_EXCLUDES" ]; then
+    cat "$NEW_EXCLUDES" > "$should_exclude_file"
+  fi
+  if [ -f "$SUGGESTED_DICTIONARIES" ]; then
+    cat "$SUGGESTED_DICTIONARIES" > "$extra_dictionaries_json"
+  fi
+  fewer_misspellings_canary="$(mktemp)"
+  quit_without_error=1
+  get_has_errors
+  if [ -n "$has_warnings" ] &&
+    to_boolean "$INPUT_ALWAYS_REPORT_COMMENT"; then
+    VERBOSE=1
+  fi
+  if [ -z "$has_errors" ] &&
+    [ -z "$patch_add" ] &&
+    [ -z "$VERBOSE" ]; then
+    quit
+  fi
+  check_spelling_report
+}
+
+get_pull_request_url() {
+  jq -r '.pull_request.url // .issue.pull_request.url // empty' "$GITHUB_EVENT_PATH"
+}
+
+get_pr_sha_from_url() {
+  pull_request_head_info="$(mktemp_json)"
+  pull_request "$1" | jq -r ".head // empty" > "$pull_request_head_info"
+  jq -r ".sha // empty" "$pull_request_head_info"
+}
+
+pr_head_sha_task() {
+  pull_request_url="$(get_pull_request_url)"
+  if [ -n "$pull_request_url" ]; then
+    echo "PR_HEAD_SHA=$(get_pr_sha_from_url "$pull_request_url")" >> "$GITHUB_ENV"
+  fi
+  quit
+}
+
+get_action_repo_info() {
+  workflow="$workflow_path" perl -e '
+    exit if defined $ENV{ACT};
+    exit unless $ENV{GITHUB_WORKSPACE} =~ m{(.*?)(?:/[^/]+){2}$};
+    my $base = "$1/_actions/";
+    exit unless $ENV{GITHUB_ACTION_PATH} =~ m{\Q$base\E(.*)};
+    my @parts = split m{/}, $1;
+    exit unless scalar @parts == 3;
+    my $action = "$parts[0]/$parts[1]\@$parts[2]";
+    exit unless open WORKFLOW, "<", $ENV{workflow };
+    while (<WORKFLOW>) {
+      next unless /^\s*uses:\s*\Q$action\E/;
+      print $action;
+      exit;
+    }
+  '
+}
+
+get_workflow_path() {
+  if [ -s "$action_workflow_path_file" ]; then
+    cat "$action_workflow_path_file"
+    return
+  fi
+  workflow_path_from_env=$(perl -e 'my $workflow = $ENV{GITHUB_WORKFLOW_REF}; $workflow =~ s!(?:[^/]+/){2}!!; $workflow =~ s!\@.*!!; print $workflow')
+  if [ -e "$workflow_path_from_env" ]; then
+    echo "$workflow_path_from_env" | tee "$action_workflow_path_file"
+    return
+  fi
+  action_run="$(mktemp_json)"
+  [ -z "$GITHUB_API_URL" ] && return
+  if call_curl \
+    "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$action_run"; then
+    workflow_url="$(jq -r '.workflow_url // empty' "$action_run")"
+    if [ -n "$workflow_url" ]; then
+      workflow_json="$(mktemp_json)"
+      if call_curl \
+        "$workflow_url" > "$workflow_json"; then
+        jq -r .path "$workflow_json" | tee "$action_workflow_path_file"
+      fi
+    elif [ -d .github/workflows ]; then
+      possible_workflows=$(mktemp)
+      if [ -n "$GITHUB_JOB" ]; then
+        github_job_pattern="^\s\s*$GITHUB_JOB\s*:\s*$"
+        if [ -n "$ACT" ]; then
+          # https://github.com/nektos/act/issues/1473
+          github_job_pattern="$github_job_pattern\|^\s\s*name\s*:\s*$GITHUB_JOB\s*$"
+        fi
+      else
+        github_job_pattern="^\s\s*spelling\s*:\s*$"
+      fi
+      find .github/workflows \( -name '*.yml' -o -name '*.yaml' \) -type f ! -empty -print0 |
+      (
+        if [ -n "$GH_ACTION_REPOSITORY" ] && [ -n "$GH_ACTION_REF" ]; then
+          xargs -0 grep -l --null "^\s\s*uses\s*:\s*$GH_ACTION_REPOSITORY@$GH_ACTION_REF" |
+          xargs -0 grep -l --null "^name\s*:\s*$GITHUB_WORKFLOW\s*$"
+        else
+          cat
+        fi
+      ) |
+          xargs -0 grep -l --null "$github_job_pattern" > "$possible_workflows"
+      if [ $(tr -cd '\000' < "$possible_workflows" | char_count) -eq 1 ]; then
+        xargs -0 < "$possible_workflows" | tee "$action_workflow_path_file"
+      fi
+    fi
+  fi
+}
+
+should_patch_head() {
+  if [ ! -d "$bucket/$project" ]; then
+    # if there is no directory in the merged state, then adding files into it
+    # will not result in a merge conflict
+    should_patch_head() {
+      true
+    }
+    should_patch_head
+    return
+  fi
+
+  # if there is a directory in the merged state, then we don't want to
+  # suggest changes to the directory if it doesn't exist in the branch,
+  # because that would almost certainly result in merge conflicts.
+  # If people want to talk to the bot, they should rebase first.
+  pull_request_url="$(get_pull_request_url)"
+  if [ -z "$pull_request_url" ]; then
+    should_patch_head() {
+      false
+    }
+    should_patch_head
+    return
+  fi
+
+  pull_request_sha="$(get_pr_sha_from_url "$pull_request_url")"
+  git fetch origin "$pull_request_sha" >&2
+  if git ls-tree "$pull_request_sha" -- "$bucket/$project" 2> /dev/null | grep -q tree; then
+    should_patch_head() {
+      true
+    }
+  else
+    should_patch_head() {
+      false
+    }
+  fi
+  should_patch_head
+}
+
+offer_quote_reply() {
+  if [ -n "$offer_quote_reply_cached" ]; then
+    return "$offer_quote_reply_cached"
+  fi
+  if to_boolean "$INPUT_EXPERIMENTAL_APPLY_CHANGES_VIA_BOT"; then
+    case "$GITHUB_EVENT_NAME" in
+      issue_comment)
+        issue="$(mktemp_json)"
+        pull_request_info="$(mktemp_json)"
+        if [ "$(are_issue_head_and_base_in_same_repo)" != 'true' ] || ! should_patch_head; then
+          offer_quote_reply_cached=1
+        else
+          offer_quote_reply_cached=0
+        fi
+        ;;
+      pull_request|pull_request_target)
+        if [ "$(are_head_and_base_in_same_repo "$GITHUB_EVENT_PATH" '.pull_request')" != 'true' ] || ! should_patch_head; then
+          offer_quote_reply_cached=1
+        else
+          offer_quote_reply_cached=0
+        fi
+        ;;
+      *)
+        offer_quote_reply_cached=1
+        ;;
+    esac
+  else
+    offer_quote_reply_cached=1
+  fi
+  return "$offer_quote_reply_cached"
+}
+
+command_v() {
+  command -v "$1" >/dev/null 2>/dev/null
+}
+
+react_comment_and_die() {
+  trigger_comment_url="$1"
+  message="$2"
+  react="$3"
+  echo "::error ::$message"
+  react "$trigger_comment_url" "$react" > /dev/null
+  report="@check-spelling-bot: ${react_prefix}$message${N}See [log]($(get_action_log)) for details."
+  if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+    echo "$report" >> "$GITHUB_STEP_SUMMARY"
+  fi
+  if [ -n "$COMMENTS_URL" ] && [ -z "${COMMENTS_URL##*:*}" ]; then
+    PAYLOAD="$(mktemp_json)"
+    wrap_in_json 'body' "$report" > "$PAYLOAD"
+
+    res=0
+    comment "$COMMENTS_URL" "$PAYLOAD" > /dev/null || res=$?
+    if [ $res -gt 0 ]; then
+      if ! to_boolean "$DEBUG"; then
+        echo "::error ::Failed posting to $COMMENTS_URL"
+        cat "$PAYLOAD"
+      fi
+      return "$res"
+    fi
+
+    rm "$PAYLOAD"
+  fi
+  quit 1
+}
+
+confused_comment() {
+  react_comment_and_die "$1" "$2" "confused"
+}
+
+get_github_user_and_email() {
+  user_json="$(mktemp_json)"
+  call_curl \
+    "$GITHUB_API_URL/users/$1" > "$user_json"
+
+  github_name="$(jq -r '.name // empty' "$user_json")"
+  if [ -z "$github_name" ]; then
+    github_name="$1"
+  fi
+  github_email="$(jq -r '.email // empty' "$user_json")"
+  rm "$user_json"
+  if [ -z "$github_email" ]; then
+    github_email="$1@users.noreply.github.com"
+  fi
+  COMMIT_AUTHOR="--author=$github_name <$github_email>"
+}
+
+git_commit() {
+  commit_reason="$1"
+  git add -u
+  git \
+    -c user.email="check-spelling-bot@users.noreply.github.com" \
+    -c user.name="check-spelling-bot" \
+    commit \
+    "$COMMIT_AUTHOR" \
+    --date="$created_at" \
+    -m "$(echo "[check-spelling] Update metadata
+
+                $commit_reason
+
+                Signed-off-by: check-spelling-bot <check-spelling-bot@users.noreply.github.com>
+                on-behalf-of: @check-spelling <check-spelling-bot@check-spelling.dev>
+                " | strip_lead)"
+}
+
+mktemp_json() {
+  file="$(mktemp)"
+  mv "$file" "$file.json"
+  echo "$file.json"
+}
+
+show_github_actions_push_disclaimer() {
+  pr_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+  pr_path_escaped="$(echo "$GITHUB_REPOSITORY/pull/$pr_number" | perl -pe 's{/}{\%2F}g')"
+  pr_query=$(echo "{
+      repository(owner:$Q${GITHUB_REPOSITORY%/*}$Q, name:$Q${GITHUB_REPOSITORY#*/}$Q) {
+        pullRequest(number:$pr_number) {
+          headRepository {
+            nameWithOwner
+          }
+          headRefName
+        }
+      }
+    }" |
+    strip_lead_and_blanks
+  )
+  pr_query_json="$(wrap_in_json 'query' "$pr_query")"
+  repository_edit_branch=$(
+    call_curl \
+    "$GITHUB_GRAPHQL_URL" \
+    -H "Content-Type: application/json" \
+    --data-binary "$pr_query_json" \
+    |
+    jq -r '(.data.repository.pullRequest.headRepository.nameWithOwner + "/edit/" + .data.repository.pullRequest.headRefName)'
+  )
+
+  get_job_info_and_step_info > /dev/null
+  update_job_name="${job_name:-update}"
+
+  action_ref=$(get_action_repo_info)
+  if to_boolean "$INPUT_CHECKOUT"; then
+    workflow_ssh_key_hint='`check-spelling`/`with`/`ssh_key`, then add them:
+
+  ``` diff
+      name: '"${update_job_name}"'
+      ...
+      steps:
+      ...
+      - name: apply spelling updates
+        uses: ${action_ref:-check-spelling/check-spelling@...}
+        with:
+          checkout: '"$INPUT_CHECKOUT"'
+  +       ssh_key: "${{ secrets.CHECK_SPELLING }}"
+  ```'
+  else
+    workflow_ssh_key_hint='`checkout`/`with`/`ssh-key`, then add them:
+
+  ``` diff
+      name: '"${update_job_name}"'
+      ...
+      steps:
+      ...
+      - name: checkout
+        uses: actions/checkout@...
+  +     with:
+  +       ssh-key: "${{ secrets.CHECK_SPELLING }}"
+  ```'
+  fi
+  if [ -n "$workflow_path" ]; then
+    qualified_workflow_path="$b$workflow_path$b workflow"
+  else
+    qualified_workflow_path="workflow"
+  fi
+  if [ "$(jq -r '.repository.owner.type // empty' "$GITHUB_EVENT_PATH" )" = 'User' ]; then
+    owner="$(jq -r '.repository.owner.login // empty' "$GITHUB_EVENT_PATH" )"
+    OWNER_TEXT="The owner ${owner:+"($owner)"}"
+  else
+    OWNER_TEXT='Users with the Admin role'
+  fi
+  OUTPUT="## ⌛ check-spelling changes applied
+
+  As [configured](https://docs.check-spelling.dev/Feature:-Update-expect-list#githubtoken), the commit pushed by @check-spelling-bot to GitHub doesn't trigger GitHub workflows due to a limitation of the @github-actions system.
+
+  <details><summary>$OWNER_TEXT can address this for future interactions 🪄</summary>
+
+  ### Create a deploy key and secret
+  $B sh
+  (
+    set -e
+    brand=check-spelling; repo=$q$GITHUB_REPOSITORY$q; SECRET_NAME=CHECK_SPELLING"'
+    cd "$(mktemp -d)"
+    ssh-keygen -f "./$brand" -q -N "" -C "$brand key for $repo"
+    gh repo deploy-key add "./$brand.pub" -R "$repo" -w -t "$brand-talk-to-bot"
+    gh secret -R "$repo" set "$SECRET_NAME" < "./$brand"
+  )'"
+  $B
+
+  ### Configure update job in workflow to use secret
+
+  If the $qualified_workflow_path ${b}${update_job_name}${b} job doesn't already have the $workflow_ssh_key_hint
+
+  </details>
+
+  <!--$n$report_header$n-->
+  To trigger another validation round and hopefully a ✅, please add a blank line, e.g. to [$expect_file]($GITHUB_SERVER_URL/$repository_edit_branch/$expect_file?pr=$pr_path_escaped) and commit the change."
+  echo "$OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY" > "$BODY"
+  body_to_payload
+  COMMENTS_URL="$(jq -r '.issue.comments_url' "$GITHUB_EVENT_PATH")"
+  response="$(mktemp)"
+  res=0
+  comment "$COMMENTS_URL" "$PAYLOAD" > "$response" || res=$?
+  if [ $res -eq 0 ]; then
+    track_comment "$response"
+  fi
+}
+
+are_head_and_base_in_same_repo() {
+  jq -r '('"$2"'.head.repo.full_name // "head") == ('"$2"'.base.repo.full_name // "base")' "$1"
+}
+
+are_issue_head_and_base_in_same_repo() {
+  jq -r '.issue // empty' "$GITHUB_EVENT_PATH" > "$issue"
+  pull_request_url="$(jq -r '.pull_request.url // empty' "$issue")"
+  pull_request "$pull_request_url" > "$pull_request_info"
+  are_head_and_base_in_same_repo "$pull_request_info" ''
+}
+
+get_comment_minimized_status() {
+  minimized_info=$(mktemp_json)
+  comment_id_to_check="$1"
+  call_curl \
+  "$GITHUB_GRAPHQL_URL" \
+  -H "Content-Type: application/json" \
+  --data-binary "$(echo '{}' | jq --arg query "query { node(id: $Q$comment_id_to_check$Q) { ... on IssueComment { isMinimized minimizedReason } } }" '.query = $query')" \
+  > "$minimized_info"
+}
+
+report_if_bot_comment_is_minimized() {
+  get_comment_minimized_status "$bot_comment_node_id"
+
+  if [ "$(jq '.data.node.isMinimized' "$minimized_info")" == 'true' ]; then
+    minimized_reason=$(jq -r '.data.node.minimizedReason | ascii_downcase // empty' "$minimized_info")
+    decorated_reason=" (_${minimized_reason}_)"
+    minimized_reason_suffix='.'
+    previous_comment_node_id=$(get_previous_comment)
+    if [ -n "$previous_comment_node_id" ]; then
+      latest_comment_url=$(get_comment_url_from_id "$previous_comment_node_id")
+      if [ -n "$latest_comment_url" ] && [ "$comment_url" != "$latest_comment_url" ]; then
+        minimized_reason_suffix=". Did you mean to apply the most recent report ($latest_comment_url)?"
+      fi
+    fi
+    case "$minimized_reason" in
+      "")
+        ;;
+      "resolved")
+        minimized_reason="$decorated_reason. This probably means the changes have already been applied";;
+      "outdated")
+        minimized_reason="$decorated_reason. This probably means the referenced report has been obsoleted by a more recent push & review";;
+      *)
+        minimized_reason="$decorated_reason";;
+    esac
+    confused_comment "$trigger_comment_url" "The referenced report comment $(comment_url_to_html_url "$comment_url") is hidden$minimized_reason$minimized_reason_suffix"
+  fi
+}
+
+char_count() {
+  wc -c | xargs
+}
+
+line_count() {
+  wc -l | xargs
+}
+
+handle_comment() {
+  action="$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")"
+  if [ "$action" != "created" ]; then
+    quit 0
+  fi
+
+  if ! offer_quote_reply; then
+    quit 0
+  fi
+
+  comment="$(mktemp_json)"
+  jq -r '.comment // empty' "$GITHUB_EVENT_PATH" > "$comment"
+  body="$(mktemp)"
+  jq -r '.body // empty' "$comment" > "$body"
+
+  trigger="$(perl -ne 'print if /\@check-spelling-bot(?:\s+|:\s*)apply.*\Q$ENV{INPUT_REPORT_TITLE_SUFFIX}\E/' < "$body")"
+  rm "$body"
+  if [ -z "$trigger" ]; then
+    quit 0
+  fi
+
+  trigger_comment_url="$(jq -r '.url // empty' "$comment")"
+  sender_login="$(jq -r '.sender.login // "check-spelling-bot"' "$GITHUB_EVENT_PATH")"
+  pull_request_head_info="$(mktemp_json)"
+  jq .head "$pull_request_info" > "$pull_request_head_info"
+  pull_request_sha="$(jq -r '.sha // empty' "$pull_request_head_info")"
+  set_comments_url "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" "$pull_request_sha"
+  react_prefix_base="Could not perform [request]($(comment_url_to_html_url "$trigger_comment_url")).$N"
+  react_prefix="$react_prefix_base"
+
+  # Ideally we'd be able to consider `.repository.collaborators_url`` and honor
+  # `Allow edits from maintainers`:
+  # https://docs.github.com/pull-requests/collaborating-with-pull-requests/working-with-forks/allowing-changes-to-a-pull-request-branch-created-from-a-fork
+  # However, at this time, that doesn't work.
+  #
+  # Note that the PR author doesn't have to have any ownership stake in the head
+  # repo branch, so we don't special case that account.
+  collaborators_url="$(jq -r '.head.repo.collaborators_url // empty' "$pull_request_info")"
+  collaborators_url="$(echo "$collaborators_url" | perl -pe "s<\{/collaborator\}></$sender_login/permission>")"
+  collaborator_permission="$(collaborator "$collaborators_url" | jq -r '.permission // empty')"
+
+  case "$collaborator_permission" in
+    admin)
+      ;;
+    write)
+      ;;
+    *)
+      collaborator_suffix="$(jq -r '(if .pull_request.head.repo.full_name then " to " + .pull_request.head.repo.full_name else "" end)' "$pull_request_info")"
+      confused_comment "$trigger_comment_url" "Commenter (@$sender_login) isn't a collaborator$collaborator_suffix."
+      ;;
+  esac
+
+  created_at="$(jq -r '.created_at // empty' "$comment")"
+  issue_url="$(jq -r '.url // empty' "$issue")"
+  pull_request_ref="$(jq -r '.ref // empty' "$pull_request_head_info")"
+  if git remote get-url origin | grep -q ^https://; then
+    pull_request_repo="$(jq -r '.repo.clone_url // empty' "$pull_request_head_info")"
+  else
+    pull_request_repo="$(jq -r '.repo.ssh_url // empty' "$pull_request_head_info")"
+  fi
+  git remote add request "$pull_request_repo"
+  git fetch request "$pull_request_sha"
+  git config advice.detachedHead false
+  git reset --hard
+  git checkout "$pull_request_sha"
+
+  set_up_files
+  git reset --hard
+
+  summary_url=$(echo "$trigger" | perl -ne '
+    next unless m{($ENV{GITHUB_SERVER_URL}/[^/]+/[^/]+/actions/runs/\d+(?:/attempts/\d+|)(?:#[-\w]+|))};
+    print $1;
+  ')
+  comment_url=$(echo "$trigger" | comment_api_url)
+  if [ -n "$summary_url" ]; then
+    [ -n "$comment_url" ] &&
+      confused_comment "$trigger_comment_url" "Found both summary url (/actions/runs) and _/_$b$comments_url${b}_/_ in comment."
+  else
+    [ -n "$comment_url" ] ||
+      confused_comment "$trigger_comment_url" "Did not find match for _/_$b$comments_url${b}_/_ in comment."
+    [ $(echo "$comment_url" | line_count) -gt 1 ] &&
+      confused_comment "$trigger_comment_url" "Found more than one _/_$b$comments_url${b}_/_ match in comment:$n$B$n$comment_url$n$B"
+  fi
+
+  if [ -n "$comment_url" ]; then
+    res=0
+    comment "$comment_url" > "$comment" ||
+      confused_comment "$trigger_comment_url" "Failed to retrieve $b$comment_url$b."
+
+    bot_comment_author=$(jq -r '.user.login // empty' "$comment")
+    bot_comment_node_id=$(jq -r '.node_id // empty' "$comment")
+    bot_comment_url=$(jq -r '.issue_url // .comment.url' "$comment")
+    github_actions_bot="github-actions[bot]"
+    [ -n "$bot_comment_author" ] ||
+      confused_comment "$trigger_comment_url" "Could not retrieve author of $(comment_url_to_html_url "$comment_url")."
+    [ "$bot_comment_author" = "$github_actions_bot" ] ||
+      confused_comment "$trigger_comment_url" "Expected @$github_actions_bot to be author of $(comment_url_to_html_url "$comment_url") (found @$bot_comment_author)."
+    [ "$issue_url" = "$bot_comment_url" ] ||
+      confused_comment "$trigger_comment_url" "Referenced comment was for a different object: $bot_comment_url"
+
+    comment_body=$(mktemp)
+    jq -r '.body // empty' "$comment" > "$comment_body"
+    rm "$comment"
+    grep -q '@check-spelling-bot Report' "$comment_body" ||
+      confused_comment "$trigger_comment_url" "$(comment_url_to_html_url "$comment_url") does not appear to be a @check-spelling-bot report"
+
+    report_if_bot_comment_is_minimized
+
+    summary_url=$(perl -ne '
+      next unless m{\(($ENV{GITHUB_SERVER_URL}/[^/]+/[^/]+/actions/runs/\d+(?:/attempts/\d+|)(?:#\S+|))\)};
+      print $1;
+    ' "$comment_body")
+    update_note="per $(comment_url_to_html_url "$comment_url") for $summary_url"
+  fi
+  if [ -n "$summary_url" ]; then
+    summary_url_repo=$(echo "$summary_url" | perl -ne '
+      next unless m{$ENV{GITHUB_SERVER_URL}/([^/]+/[^/]+)/actions/runs/\d+(?:/attempts/\d+|)(?:#\S+|)};
+      print $1;
+    ')
+    if [ "$summary_url_repo" != "$GITHUB_REPOSITORY" ]; then
+      pull_url=$(jq -r '.issue.html_url // empty' "$GITHUB_EVENT_PATH")
+      if [ -n "$pull_url" ]; then
+        see_checks_url="Look in the [checks tab]($pull_url/checks) for the latest check-spelling report."
+      else
+        see_checks_url=''
+      fi
+      confused_comment "$trigger_comment_url" "Found a GitHub summary for repo $b$summary_url_repo$b but expected repo $b$GITHUB_REPOSITORY$b. This could be because the repository was moved or renamed, or it could just be from the wrong repository. $see_checks_url"
+    fi
+    if [ -n "$INPUT_REPORT_TITLE_SUFFIX" ]; then
+      title_suffix_re='.*'"$("$quote_meta" "$INPUT_REPORT_TITLE_SUFFIX")"
+    fi
+    if [ -z "$bot_comment_node_id" ]; then
+      comment_search_re='@check-spelling-bot(?:[\t ]+|:[\t ]*)apply.*'"$("$quote_meta" "${summary_url%%#*}")$title_suffix_re"
+      COMMENTS_URL=$(jq -r '.issue.comments_url' "$GITHUB_EVENT_PATH")
+      bot_comment_node_id_and_status=$(get_a_comment "$comment_search_re")
+      if [ -n "$bot_comment_node_id_and_status" ]; then
+        bot_comment_node_id="$(echo "$bot_comment_node_id_and_status" | head -1)"
+        comment_url=$(get_comment_url_from_id "$bot_comment_node_id")
+        report_if_bot_comment_is_minimized
+      fi
+      update_note="for $summary_url"
+    fi
+
+    summary_url_api=$(
+      echo "$summary_url" | perl -ne '
+      next unless m{$ENV{GITHUB_SERVER_URL}/($ENV{GITHUB_REPOSITORY}/actions/runs/\d+(?:/attempts/\d+|))};
+      print "/repos/$1";
+    ')
+    [ -n "$summary_url_api" ] || confused_comment "$trigger_comment_url" "Failed to retrieve api url -- this should never happen. Please file a bug."
+    gh_api_fault=$(mktemp)
+    gh_api_err=$(mktemp)
+    if ! GH_TOKEN="$GITHUB_TOKEN" gh api "/repos/$GITHUB_REPOSITORY/actions/cache/usage" > "$gh_api_fault" 2> "$gh_api_err"; then
+      if [ "$(jq -r .message "$gh_api_fault")" = 'Resource not accessible by integration' ]; then
+        confused_comment "$trigger_comment_url" "In order for this job to handle $summary_url, it needs:$(echo "
+
+        $B diff
+         permissions:
+        +  actions: read
+        $B
+        " | strip_leading 8)"
+      fi
+      confused_comment "$trigger_comment_url" "$(echo "Unexpected error retrieving action metadata for $GITHUB_REPOSITORY. Please file a bug.
+
+      Details:
+      $B json
+      $(cat "$gh_api_fault")
+      $B
+
+      $B
+      $(cat "$gh_api_err")
+      $B
+      " | strip_lead)"
+    fi
+    head_branch=$(GH_TOKEN="$GITHUB_TOKEN" gh api "$summary_url_api" -q '.head_branch' || true)
+    [ -n "$head_branch" ] ||
+    confused_comment "$trigger_comment_url" "Failed to retrieve $b.head_branch$b for $summary_url. Please file a bug."
+    [ "$head_branch" = "$pull_request_ref" ] ||
+    confused_comment "$trigger_comment_url" "$summary_url ($head_branch) does not match expected branch ($pull_request_ref)"
+    apply_output=$(mktemp)
+    apply_err=$(mktemp)
+
+    APPLY_SKIP_UPDATE_CHECK=1 \
+    GH_TOKEN="$GITHUB_TOKEN" \
+      "$spellchecker/apply.pl" "$summary_url" > "$apply_output" 2> "$apply_err" ||
+    confused_comment "$trigger_comment_url" "Apply failed.${N}$(cat "$apply_output")${N}${N}$(cat "$apply_err")"
+  else
+    confused_comment "$trigger_comment_url" "Unexpected state."
+  fi
+  git status --u=no --porcelain | grep -q . ||
+    confused_comment "$trigger_comment_url" "Request did not change repository content.${N}Maybe someone already applied these changes?"
+  react_prefix="$react_prefix_base"
+  get_github_user_and_email "$sender_login"
+  git_commit "$(echo "Update $update_note
+                      Accepted in $(comment_url_to_html_url "$trigger_comment_url")
+                    "|strip_lead)" ||
+    confused_comment "$trigger_comment_url" "Did not generate a commit.${N}Perhaps there was a merge conflict or an object changed from being a directory to a file or vice versa? (Please file a bug including a link to this comment.)"
+  git push request "HEAD:$pull_request_ref" ||
+  {
+    {
+      git show HEAD
+    } || true
+    confused_comment "$trigger_comment_url" "Generated a commit, but the $pull_request_repo rejected the commit.${N}Maybe this task lost a race with another push?"
+  }
+
+  react "$trigger_comment_url" 'eyes' > /dev/null
+
+  react "${comment_url:-$trigger_comment_url}" 'rocket' > /dev/null
+  trigger_node=$(jq -r '.comment.node_id // empty' "$GITHUB_EVENT_PATH")
+  collapse_comment "$trigger_node" "$bot_comment_node_id"
+
+  if git remote get-url origin | grep -q ^https://; then
+    show_github_actions_push_disclaimer
+  else
+    echo "## ✅ check-spelling changes applied" >> "$GITHUB_STEP_SUMMARY"
+  fi
+  echo "
+  ### Metadata updates
+
+  $B
+  $(git diff HEAD~..HEAD --stat=2000)
+  $B
+  " | strip_lead >> "$GITHUB_STEP_SUMMARY"
+  echo "# end"
+  quit 0
+}
+
+encode_artifact() {
+  echo 'You will want to cat the following content to:'
+  echo
+  echo "perl -ne 'next if /--- (?:BEGIN|END) BASE64 ---/; next unless s{^[^|]*\|\s*}{};print' | base64 -d -o artifact.zip"
+  echo '--- BEGIN BASE64 ---'
+  base64 "$1"
+  echo '--- END BASE64 ---'
+}
+
+build_artifact_suffix() {
+  artifact_suffix="-$(echo "$INPUT_REPORT_TITLE_SUFFIX" | perl -pe 's/^\s+|\s+$//; s/[^a-z]+/-/gi;')"
+}
+
+events_to_regular_expression() {
+  perl -pe 's/[^-a-z]+/|/g;s/^\||\|$//g;s/^$/\$^/'
+}
+
+is_number() {
+  [ "$1" -eq "$1" ] 2>/dev/null
+}
+
+define_variables() {
+  if [ -f "$output_variables" ]; then
+    return
+  fi
+  . "$spellchecker/update-state.sh"
+  action_workflow_path_file="$(mktemp)"
+  retrieved_default_workflow_file="$(mktemp)"
+  workflow_path=$(get_workflow_path)
+  load_env
+  GITHUB_TOKEN="${GITHUB_TOKEN:-"$INPUT_GITHUB_TOKEN"}"
+  if [ -n "$GITHUB_TOKEN" ]; then
+    export AUTHORIZATION_HEADER="Authorization: token $GITHUB_TOKEN"
+  fi
+
+  if  [ -n "$ACT" ] &&
+      [ -z "$GITHUB_ACTION_REPOSITORY" ] &&
+      [ -z "$GITHUB_ACTION_REF" ] &&
+      [ "$GH_ACTION_REF" = "$GITHUB_REF_NAME" ] &&
+      [ "$GH_ACTION_REPOSITORY" = "$GITHUB_REPOSITORY" ]; then
+    # https://github.com/nektos/act/issues/1473 github.action_repository / github.action_ref aren't properly filled in
+    GH_ACTION_REPOSITORY=$(git -C "$GITHUB_ACTION_PATH" config --get remote.origin.url|perl -pe 's{.*[:/]([^:/]+/[^/]+)$}{$1}')
+    GH_ACTION_REF=${GITHUB_ACTION_PATH##*@}
+  fi
+
+  export early_warnings="$(mktemp)"
+  if [ -n "$INPUT_INTERNAL_STATE_DIRECTORY" ]; then
+    data_dir="$INPUT_INTERNAL_STATE_DIRECTORY"
+    if [ ! -e "$data_dir" ] && [ -n "$INPUT_CALLER_CONTAINER" ]; then
+      mkdir -p "$data_dir"
+      docker cp "$INPUT_CALLER_CONTAINER:$data_dir" "$(dirname "$data_dir")"
+    fi
+    artifact=artifact
+    if [ -n "$INPUT_REPORT_TITLE_SUFFIX" ]; then
+      build_artifact_suffix
+      if [ -e "$data_dir/$artifact$artifact_suffix.zip" ]; then
+        artifact="$artifact$artifact_suffix"
+      fi
+    fi
+    if [ -s "$data_dir/$artifact.zip" ]; then
+      artifact="$artifact.zip"
+      (
+        cd "$data_dir"
+        if [ -n "$INPUT_CALLER_CONTAINER" ]; then
+          encode_artifact "$artifact"
+        fi
+        unzip -q "$artifact"
+        rm "$artifact"
+      )
+    fi
+  else
+    data_dir="$(mktemp -d)"
+  fi
+  if [ -s "$data_dir/early_warnings.txt" ]; then
+    cat "$data_dir/early_warnings.txt" >> "$early_warnings"
+  fi
+  mv "$early_warnings" "$data_dir/early_warnings.txt"
+  early_warnings="$data_dir/early_warnings.txt"
+  severity_level="$data_dir/severity_level.txt"
+  severity_list="$data_dir/severity_list.txt"
+  default_workflow_file="$data_dir/workflow.yml"
+
+  if  [ ! -s "$default_workflow_file" ] &&
+      [ -s "$retrieved_default_workflow_file" ]; then
+    cp "$retrieved_default_workflow_file" "$default_workflow_file"
+  fi
+
+  bucket="${INPUT_BUCKET:-"$bucket"}"
+  project="${INPUT_PROJECT:-"$project"}"
+  if to_boolean ${junit:+"$junit"} || to_boolean "$INPUT_QUIT_WITHOUT_ERROR"; then
+    quit_without_error=1
+  fi
+  if [ -z "$bucket" ] && [ -z "$project" ] && [ -n "$INPUT_CONFIG" ]; then
+    bucket=${INPUT_CONFIG%/*}
+    project=${INPUT_CONFIG##*/}
+  fi
+  job_count="${INPUT_EXPERIMENTAL_PARALLEL_JOBS}"
+  if [ -z "$job_count" ]; then
+    job_count=$(nproc 2>/dev/null || sysctl -n hw.physicalcpu)
+  fi
+  if ! is_number "$job_count" || [ $job_count -lt 2 ]; then
+    job_count=1
+  fi
+  extra_dictionary_limit="$(echo "${INPUT_EXTRA_DICTIONARY_LIMIT}" | perl -pe 's/\D+//g')"
+  if [ -z "$extra_dictionary_limit" ]; then
+    extra_dictionary_limit=5
+  fi
+  if [ -e "$action_workflow_path_file" ]; then
+    mv "$action_workflow_path_file" "$data_dir/workflow-path.txt"
+  fi
+  if [ "$INPUT_SUBMODULES" == "true" ] || [ "$INPUT_SUBMODULES" == "recursive" ]; then
+    RECURSE_SUBMODULES="--recurse-submodules"
+  else
+    RECURSE_SUBMODULES=""
+  fi
+  action_workflow_path_file="$data_dir/workflow-path.txt"
+  workflow_path=$(get_workflow_path)
+
+  dict=$(mktemp)
+  splitter_sandbox=$(mktemp -d)
+  splitter_configuration=$(mktemp -d)
+  patterns="$splitter_configuration/patterns.txt"
+  forbidden_path="$splitter_configuration/forbidden.txt"
+  candidates_path="$splitter_configuration/candidates.txt"
+  excludes=${excludes:-$(mktemp)}
+  temp_sandbox=$(mktemp -d)
+  excludes_path="$temp_sandbox/excludes.txt"
+  only=${only:-$(mktemp)}
+  only_path="$temp_sandbox/only.txt"
+  dictionary_path="$temp_sandbox/dictionary.txt"
+  allow_path="$temp_sandbox/allow.txt"
+  reject_path="$temp_sandbox/reject.txt"
+  expect_path="$temp_sandbox/expect.words.txt"
+  excludelist_path="$temp_sandbox/excludes.txt"
+  patterns_path="$temp_sandbox/patterns.txt"
+  advice_path="$temp_sandbox/advice.md"
+  advice_path_txt="$temp_sandbox/advice.txt"
+  word_splitter="$spellchecker/wrappers/spelling-unknown-word-splitter"
+  word_collator="$spellchecker/wrappers/spelling-collator"
+  expect_collator="$spellchecker/wrappers/expect-collator"
+  if to_boolean "$INPUT_ONLY_CHECK_CHANGED_FILES"; then
+    sort_words_unique() {
+      perl -ne 'next unless /./; print'|sort -u|sort -f
+    }
+    strip_word_collator_suffix=cat
+  else
+    strip_word_collator_suffix="$spellchecker/strip-word-collator-suffix.pl"
+    sort_words_unique() {
+      sort_unique
+    }
+  fi
+  adjust_severities="$spellchecker/wrappers/adjust-severities"
+  find_token="$spellchecker/find-token.pl"
+  output_covers="$spellchecker/output-covers.pl"
+  cleanup_files="$spellchecker/wrappers/cleanup-files"
+  file_size="$spellchecker/file-size.pl"
+  check_yaml_key_value="$spellchecker/wrappers/check-yaml-key-value"
+  get_yaml_value="$spellchecker/wrappers/get-yaml-value"
+  quote_meta="$spellchecker/quote-meta.pl"
+  summary_tables="$spellchecker/wrappers/summary-tables"
+  generate_sarif="$spellchecker/wrappers/generate-sarif"
+  get_commits_for_check_commit_message="$spellchecker/get-commits-for-check-commit-message.pl"
+  scope_files="$spellchecker/wrappers/exclude"
+  calculate_delay="$spellchecker/wrappers/calculate-delay"
+  insert_into_summary="$spellchecker/wrappers/insert-into-summary"
+  dictionary_coverage="$spellchecker/wrappers/dictionary-coverage"
+  suggest_excludes="$spellchecker/wrappers/suggest-excludes"
+  run_output="$temp_sandbox/unknown.words.txt"
+  diff_output="$temp_sandbox/output.diff"
+  used_config_files="$data_dir/used-config-files.list"
+  seen_config_files="$data_dir/seen-config-files.list"
+  tokens_file="$data_dir/tokens.txt"
+  add_to_allow="$data_dir/add_to_allow.txt"
+  remove_words="$data_dir/remove_words.txt"
+  action_log_ref="$data_dir/action_log_ref.txt"
+  action_log_file_name="$data_dir/action_log_file_name.txt"
+  job_id_ref="$data_dir/job_id_ref.txt"
+  jobs_summary_link="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
+  extra_dictionaries_json="$data_dir/suggested_dictionaries.json"
+  dictionary_source_prefixes_json="$data_dir/dictionary_source_prefixes.json"
+  check_extra_dictionaries_list="$data_dir/check_extra_dictionaries.list"
+  extra_dictionaries_list="$data_dir/extra_dictionaries.list"
+  export sarif_overlay_path="$data_dir/overlay.sarif.json"
+  export config_json_path="$data_dir/config.json"
+  homoglyph_list_path="$data_dir/homoglyph.list"
+  file_list="$data_dir/checked_files.lst"
+  BODY="$data_dir/comment.md"
+  delay_step_summary_warnings="$(mktemp)"
+  output_variables="$(mktemp)"
+  instructions_preamble="$(mktemp)"
+  if to_boolean "$INPUT_REPORT_TIMING"; then
+    timing_report="$data_dir/timing_report.csv"
+  fi
+
+  report_header="# @check-spelling-bot Report"
+  if [ -n "$INPUT_REPORT_TITLE_SUFFIX" ]; then
+    report_header="$report_header $INPUT_REPORT_TITLE_SUFFIX"
+  fi
+  if [ -z "$GITHUB_OUTPUT" ]; then
+    GITHUB_OUTPUT=$(mktemp)
+    GH_OUTPUT_STUB=1
+  fi
+
+  export pull_request_base="$(jq -r '.comment.html_url' "$GITHUB_EVENT_PATH" | perl -pe 's/\d+$/(\\d+)/')"
+  comments_base="$(jq -r '.repository.comments_url // empty' "$GITHUB_EVENT_PATH" | number_filter)"
+  export issue_comments_base="$(jq -r '.repository.issue_comment_url // empty' "$GITHUB_EVENT_PATH" | number_filter)"
+  export comments_url="$pull_request_base|$comments_base|$issue_comments_base"
+}
+
+set_output_variable() {
+  echo "$1=$2" >> "$output_variables"
+}
+
+number_filter() {
+  perl -pe 's<\{.*\}></(\\d+)>'
+}
+
+comment_api_url() {
+  perl -ne '
+    next unless m{((?:$ENV{comments_url}))};
+    my $capture=$1;
+    my $old_base=$ENV{pull_request_base};
+    my $prefix=$ENV{issue_comments_base};
+    $old_base=~s{\Q(\d+)\E$}{};
+    $prefix=~s{\Q(\d+)\E$}{};
+    $capture =~ s{$old_base}{$prefix};
+    print "$capture\n";
+  ' |
+  sort -u
+}
+
+check_yaml_key_value() {
+  (
+  if [ -n "$1" ]; then
+    KEY="$KEY" \
+    VALUE="$VALUE" \
+    MESSAGE=${MESSAGE:+"$MESSAGE"} \
+    file="$file" \
+    "$check_yaml_key_value" "$1"
+  else
+    echo "?:0:1, $MESSAGE"
+  fi
+  ) >> "$early_warnings"
+}
+
+check_input() {
+  if to_boolean "$2"; then
+    KEY="$1" \
+    VALUE="$2" \
+    MESSAGE="$3" \
+    file="$workflow_path" \
+    check_yaml_key_value "$validate_workflow_path"
+  fi
+}
+check_inputs() {
+  if [ -e "$workflow_path" ]; then
+    validate_workflow_path="$workflow_path"
+  else
+    validate_workflow_path="$INPUT_INTERNAL_STATE_DIRECTORY/workflow.yml"
+    if [ ! -e "$validate_workflow_path" ]; then
+      validate_workflow_path=/dev/null
+    fi
+  fi
+  check_input \
+    use_sarif \
+    "$WARN_USE_SARIF_NEEDS_SECURITY_EVENTS_WRITE" \
+    'Warning - Unsupported configuration: `use_sarif` needs `security-events: write`. Alternatively, consider removing `use_sarif` (unsupported-configuration)'
+  check_input \
+    use_sarif \
+    "$WARN_USE_SARIF_NEEDS_ADVANCED_SECURITY" \
+    'Warning - Unsupported configuration: `use_sarif` needs GitHub Advanced Security to be enabled - see <https://docs.github.com/get-started/learning-about-github/about-github-advanced-security>. Alternatively, consider removing `use_sarif` (unsupported-configuration)'
+  check_input \
+    use_sarif \
+    "$WARN_USE_SARIF_ONLY_CHANGED_FILES" \
+    'Warning - Unsupported configuration: `use_sarif` is incompatible with `only_check_changed_files`. Alternatively, consider removing `use_sarif` or `only_check_changed_files` (unsupported-configuration)'
+  if [ -n "$ACT" ]; then
+    check_input \
+      post_comment \
+      "$INPUT_POST_COMMENT" \
+      'Warning - Unsupported configuration: `post_comment` is not compatible with nektos/act. Consider removing `post_comment` or not running this job from act (unsupported-configuration)'
+    if to_boolean "$INPUT_USE_SARIF" &&
+      [ "$GITHUB_REPOSITORY" = '.' ]; then
+      INPUT_USE_SARIF=
+      echo '::warning ::Disabling SARIF under act without repository'
+    fi
+  fi
+  if [ -n "$INPUT_SPELL_CHECK_THIS" ] &&
+    ! echo "$INPUT_SPELL_CHECK_THIS" | perl -ne 'chomp; exit 1 unless m{^[-_.A-Za-z0-9]+/[-_.A-Za-z0-9]+(?:|\@[-_./A-Za-z0-9]+)$};'; then
+    KEY=spell_check_this \
+    VALUE="$INPUT_SPELL_CHECK_THIS" \
+    MESSAGE='Warning - Unsupported repository: `spell_check_this`. Correct value or remove configuration (unsupported-repo-notation)' \
+    file="$workflow_path" \
+    check_yaml_key_value "$validate_workflow_path"
+    INPUT_SPELL_CHECK_THIS=''
+  fi
+  if [ -n "$INPUT_EXTRA_DICTIONARIES" ]; then
+    INPUT_EXTRA_DICTIONARIES="$(echo "$INPUT_EXTRA_DICTIONARIES" | words_to_lines | sort)"
+    for duplicated_dictionary in $(echo "$INPUT_EXTRA_DICTIONARIES" | uniq -d); do
+      KEY=extra_dictionaries \
+      VALUE="$duplicated_dictionary" \
+      MESSAGE="Warning - $b$duplicated_dictionary$b appears multiple times in ${b}extra_dictionaries${b} (duplicate-extra-dictionary)" \
+      file="$workflow_path" \
+      check_yaml_key_value "$validate_workflow_path"
+    done
+    INPUT_EXTRA_DICTIONARIES="$(echo "$INPUT_EXTRA_DICTIONARIES" | uniq)"
+  fi
+}
+
+sort_unique() {
+  sort -u -f | perl -ne 'next unless /./; print'
+}
+
+project_file_path() {
+  echo "$bucket/$project/$1"
+}
+
+cleanup_files() {
+  result=0
+  cat "$3" |
+  type="$1" \
+  output="$2" \
+  used_config_files="$used_config_files" \
+  xargs -0 "$cleanup_files" || result=$?
+  if [ $result -gt 0 ]; then
+    quit "$result"
+  fi
+}
+
+get_project_files() {
+  ext="${1##*.}"
+  file="${1%.$ext}"
+  dest="$2"
+  type="$file"
+  if [ -e "$dest" ]; then
+    return
+  fi
+  if [ -z "$bucket" ] || [ -z "$project" ]; then
+    return
+  fi
+  from="$(project_file_path "$file"."$ext")"
+  append_to="$from"
+  from_expanded_file=$(mktemp)
+  if [ -f "$from" ]; then
+    echo "Retrieving $file from $from"
+    printf "$from\0" > "$from_expanded_file"
+    cleanup_files "$type" "$dest" "$from_expanded_file"
+  else
+    if [ ! -e "$from" ]; then
+      from="${from%.$ext}"
+    fi
+    if [ -d "$from" ]; then
+      find "$from" -mindepth 1 -maxdepth 1 -name "*$ext" ! -name "*$n*" -print0 | sort -z > "$from_expanded_file"
+      append_to="$from"/"$(git rev-parse --revs-only HEAD || date '+%Y%M%d%H%m%S')"."$ext"
+      touch "$dest"
+      echo "Retrieving $file from:$n$(tr "\0" "\n" < "$from_expanded_file")"
+      temp_file=$(mktemp)
+      cleanup_files "$type" "$dest" "$from_expanded_file"
+      if [ "$ext" = json ]; then
+        jq -s 'reduce .[] as $obj ({}; . * $obj)' "$dest" > "$dest".merged &&
+        mv "$dest".merged "$dest"
+      fi
+      from="$from"/"$(basename "$from")"."$ext"
+    else
+      from="$from.$ext"
+      printf "$from\0" > "$from_expanded_file"
+      if [ -f "$from" ]; then
+        cleanup_files "$type" "$dest" "$from_expanded_file"
+      fi
+    fi
+  fi
+}
+get_project_files_deprecated() {
+  # "preferred" "deprecated" "path"
+  if [ ! -s "$3" ]; then
+    save_append_to="$append_to"
+    get_project_files "$2" "$3"
+    if [ -s "$3" ]; then
+      example="$(tr "\0" "\n" < "$from_expanded_file"|head -1)"
+      if [ "$(basename "$(dirname "$example")")" = "$2" ]; then
+        note=" directory"
+      else
+        note=""
+      fi
+      if [ -e "$example" ]; then
+        first_line_length=$(( $(head -1 "$example" 2>/dev/null|wc -c) + 1 ))
+      else
+        first_line_length=1
+      fi
+      echo "$example:1:1 ... $first_line_length, Warning - Deprecation: please rename '$2'$note to '$1' (deprecated-feature)" >> "$early_warnings"
+    else
+      append_to="$save_append_to"
+    fi
+  fi
+}
+
+download() {
+  exit_value=0
+  keep_headers=1 call_curl "$1" > "$2"
+  if { [ -z "$response_code" ] || [ $response_code -ge 400 ] || [ $response_code -eq 000 ] ; } 2> /dev/null; then
+    exit_value=1
+    (
+      echo "Failed to download $1 (to $2)"
+      cat "$response_headers"
+    ) >&2
+  else
+    echo "Downloaded $1 (to $2)" >&2
+  fi
+  return "$exit_value"
+}
+
+github_step_summary_kind() {
+  # github_step_summary_kind head body hint kind
+  (
+    echo "# :$4: $1"
+    echo
+    echo "$2"
+    echo
+    echo "$3"
+    echo
+  ) >> "$delay_step_summary_warnings"
+}
+
+more_info_message() {
+  echo "For more information, see [$1](https://docs.check-spelling.dev/Event-descriptions#$1)."
+}
+
+github_step_summary_warning() {
+  github_step_summary_kind "$1" "$2" "$3" 'warning'
+}
+
+github_step_summary_likely_fatal() {
+  github_step_summary_kind "$1" "$2" "$3" 'stop_sign'
+  offer_quote_reply_cached=1
+}
+
+github_step_summary_likely_fatal_event() {
+  github_step_summary_likely_fatal "$1" "$2" "⚠️ $(more_info_message "$3")"
+}
+
+github_step_summary_dictionaries_failed() {
+  failed_dictionaries_dir="${dictionaries_base_dir:-"$spellchecker/dictionaries"}/$1.failed"
+  failed_dictionaries=$(cat $failed_dictionaries_dir/* 2>/dev/null)
+  message="Problems were encountered retrieving $1 dictionaries ($(echo "${failed_dictionaries:-$2}"|xargs))."
+
+  dictionary_not_found="$1-dictionary-not-found"
+  echo -n '#' >> "$delay_step_summary_warnings"
+  if [ "$1" = extra ]; then
+    github_step_summary_likely_fatal_event 'Dictionary not found' "$message" "$dictionary_not_found"
+  else
+    github_step_summary_warning 'Dictionary not found' "$message" "⚠️ $(more_info_message "$dictionary_not_found")"
+  fi
+}
+
+download_or_quit_with_error() {
+  exit_code="$(mktemp)"
+  download "$1" "$2" || (
+    echo "$?" > "$exit_code"
+    echo "Could not download $1 (required-download-failed)" >&2
+    github_step_summary_likely_fatal_event \
+      'Required download failed' \
+      "Could not download $1." \
+      'required-download-failed'
+  )
+  if [ -s "$exit_code" ]; then
+    exit_value="$(cat "$exit_code")"
+    rm "$exit_code"
+    quit "$exit_value"
+  fi
+}
+
+set_up_curl() {
+  . "$spellchecker/call-curl.sh"
+}
+
+limit_apt_repositories() {
+  disable_apt_repository() {
+    parent=/etc/apt/sources.list.d
+    if [ -f "$parent/$1" ]; then
+      ${SUDO:+"$SUDO"} mv "$parent/$1" "$parent/$1.disabled"
+    fi
+  }
+  for repository in azure-cli.sources github_git-l"f"s.list micro"soft"-prod.list; do
+    disable_apt_repository "$repository"
+  done
+  if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+    ${SUDO:+"$SUDO"} perl -pi.disabled -e '
+      if (/Components:/) { s/\b(?:restricted|multiverse)\b//g; };
+      if (/Suites:/) { s/\b\w+-(?:updates|backports)\b//g; };
+    ' /etc/apt/sources.list.d/ubuntu.sources
+  else
+    ${SUDO:+"$SUDO"} perl -pi.disabled -e '
+      s%^(deb https?://\S+\s+\w+-.*)%#$1%;
+      next if /^#/;
+      s%^(deb https?://\S+\s+\w+ multiverse)%#$1%;
+      s%\bmain restricted\b%main # restricted%;
+    ' /etc/apt/sources.list
+  fi
+  limit_apt_repositories() {
+    :
+  }
+}
+
+apt_install() {
+  apt_out=$(mktemp)
+  apt_err=$(mktemp)
+  ${SUDO:+"$SUDO"} apt-get -qq -y --no-install-recommends satisfy "$1" > $apt_out 2> $apt_err
+}
+
+install_tools() {
+  if [ -n "$apps$perl_libs" ]; then
+    if command_v apt-get; then
+      limit_apt_repositories
+
+      export DEBIAN_FRONTEND=noninteractive
+      perl_debian_packages=$(
+        for perl_lib in $perl_libs; do
+          echo $(get_apt_perl_lib $perl_lib)
+        done
+      )
+      apps="$apps $perl_debian_packages"
+      if ! apt_install "$apps"; then
+        ${SUDO:+"$SUDO"} apt-get -qq update
+        if apt_install "$apps"; then
+          :
+        else
+          exit_code=$?
+          echo apt output:
+          cat "$apt_out"
+          echo apt error:
+          cat "$apt_err"
+          exit $exit_code
+        fi
+      fi
+      echo "Installed:$apps" >&2
+      full_perl_libs="$perl_libs"
+      perl_libs=
+      for perl_lib in $perl_libs; do add_perl_lib $perl_lib; done
+      if [ -n "$perl_libs" ] && ! command_v cpanm; then
+        apt_install cpanm
+      fi
+      apps=
+    elif command_v apk; then
+      echo "$apps" | xargs apk add
+      apps=
+    elif command_v brew; then
+      echo "$apps" | xargs brew install
+      apps=
+    else
+      echo "missing $apps -- things will fail" >&2
+    fi
+  fi
+  if [ -n "$perl_libs" ]; then
+    if ! command_v cpanm; then
+      curl -s -S -L https://cpanmin.us | perl - --sudo App::cpanminus
+    fi
+    echo "$perl_libs" | xargs perl "$(command -v cpanm)" --notest
+    perl_libs=''
+  fi
+}
+
+if command_v "apk"; then
+add_app() {
+  if ! apk -e info "$1" >/dev/null; then
+    apps="$apps $@"
+  fi
+}
+  apk add \
+    bash \
+    cmd:env \
+    curl \
+    file \
+    github-cli \
+    grep \
+    make \
+    perl \
+    perl-app-cpanminus \
+    wget \
+    zip \
+  ;
+else
+add_app() {
+  if ! command_v "$1"; then
+    apps="$apps $(echo "$@"|perl -pe 's/\s+(?=\S)/,/g;s/,*$/,/')"
+  fi
+}
+fi
+
+get_apt_perl_lib() {
+  apt_package_infix=$(echo "$1"|perl -pe 's/::/-/;$_=(lc $_)')
+  any=lib"any"
+  echo "lib$apt_package_infix-perl | $any$apt_package_infix-perl | lib$apt_package_infix-xs-perl,"
+}
+
+add_perl_lib() {
+  if ! perl -M"$1" -e '' 2>/dev/null; then
+    perl_libs="$perl_libs $1"
+  fi
+}
+
+need_hunspell() {
+  to_boolean "$INPUT_ALLOW_HUNSPELL" &&
+  echo "$INPUT_EXTRA_DICTIONARIES $INPUT_CHECK_EXTRA_DICTIONARIES" | grep -q '\.dic'
+}
+
+check_perl_libraries() {
+  if command_v apt-get; then
+    HAS_APT=1
+  fi
+
+  add_perl_lib HTTP::Date
+  add_perl_lib URI::Escape
+  add_perl_lib YAML::PP
+  if to_boolean "$INPUT_USE_SARIF"; then
+    add_perl_lib Hash::Merge
+  fi
+  if need_hunspell; then
+    add_app hunspell
+    add_perl_lib Text::Hunspell
+  fi
+}
+
+set_up_tools() {
+  apps=""
+
+  add_app curl ca-certificates
+  add_app file
+  add_app git
+  add_app zip
+  if to_boolean "$INPUT_CHECK_IMAGES" && ! command_v tesseract; then
+    add_app tesseract-ocr
+  fi
+  if ! command_v gh; then
+    if command_v apt-get && ! apt-cache policy gh | grep -q Candidate:; then
+      curl -A "$curl_ua" -f -s -S -L https://cli.github.com/packages/githubcli-archive-keyring.gpg |
+        $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2> /dev/null
+      $SUDO chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
+        $SUDO tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    fi
+    add_app gh
+  fi
+  check_perl_libraries
+  install_tools
+  set_up_jq
+}
+
+set_up_jq() {
+  if ! command_v jq || jq --version | perl -ne 'exit 0 unless s/^jq-//;exit 1 if /^(?:[2-9]|1\d|1\.(?:[6-9]|1\d+))/; exit 0'; then
+    if [ "$(uname)" == "Linux" ]; then
+      spellchecker_bin="$spellchecker/bin"
+      jq_bin="$spellchecker_bin/jq"
+      if [ ! -x "$jq_bin" ]; then
+        jq_url=https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
+        mkdir -p "$spellchecker_bin"
+        download_or_quit_with_error "$jq_url" "$jq_bin"
+        chmod 0755 "$jq_bin"
+      fi
+      PATH="$spellchecker_bin:$PATH"
+    else
+      add_app jq
+      install_tools
+    fi
+  fi
+}
+
+words_to_lines() {
+  xargs -n1
+}
+
+build_dictionary_alias_pattern() {
+  if [ -z "$dictionary_alias_pattern" ]; then
+    jq_error=$(mktemp)
+    dictionary_alias_pattern="$(
+      echo "$INPUT_DICTIONARY_SOURCE_PREFIXES" |
+      jq -r 'to_entries | map( {("s{^" +.key + ":}{" + .value +"};"): 1 } ) | .[] | keys[]' 2> "$jq_error" |xargs echo
+    )"
+    if [ -z "$dictionary_alias_pattern" ] && [ -s "$jq_error" ]; then
+      echo "::error ::Failed to parse dictionary_source_prefixes -- probably bad json (bad-dictionary-source-prefixes)" >> "$early_warnings"
+    fi
+  fi
+}
+
+expand_dictionary_url() {
+  echo "$1" | perl -pe "$dictionary_alias_pattern"
+}
+
+get_extra_dictionary() {
+  extra_dictionary_url="$1"
+  source_link="$dictionaries_dir"/."$2"
+  url="$(expand_dictionary_url "$extra_dictionary_url")"
+  dest="$dictionaries_dir"/"$2"
+  if [ "$url" != "${url#"${GITHUB_SERVER_URL}"/*}" ]; then
+    no_curl_auth=1
+  fi
+  keep_headers=1 call_curl \
+    "$url" \
+    > "$dest"
+  if echo "$url"|grep -q -E '^https?://'; then
+    if { [ -z "$response_code" ] || [ $response_code -ge 400 ] || [ $response_code -eq 000 ] ; } 2> /dev/null; then
+      echo "::error ::Failed to retrieve $extra_dictionary_url -- HTTP $response_code for $url ($dictionary_class-dictionary-not-found)" >> "$early_warnings"
+      (
+        echo "Failed to retrieve $extra_dictionary_url ($url)"
+        cat "$response_headers"
+      ) >&2
+      dictionary_name=$(mktemp)
+      echo "$extra_dictionary_url" > "$dictionary_name"
+      mv "$dictionary_name" "$failed_dictionaries_dir"
+      rm -f "$dictionaries_canary"
+      return
+    fi
+    if [ $response_code -eq 304 ]; then
+      return
+    fi
+  fi
+  echo "Retrieved $extra_dictionary_url" >&2
+  if [ -n "$real_dest" ]; then
+    mv "$dest" "$real_dest"
+    dest="$real_dest"
+  fi
+  echo "$extra_dictionary_url" > "$source_link"
+}
+
+get_hunspell_stem() {
+  echo "$1" | perl -pe 's{.*?([^:/]+)/src/hunspell/index.*}{$1};s{.*/}{}'
+}
+
+get_extra_dictionaries() {
+  dictionary_class="$1"
+  dictionaries_dir="${dictionaries_base_dir:-"$spellchecker/dictionaries"}/$dictionary_class"
+  extra_dictionaries="$(echo "$2" | words_to_lines)"
+  dictionaries_canary="$3"
+  failed_dictionaries_dir="$dictionaries_dir.failed"
+  mkdir -p "$dictionaries_dir" "$failed_dictionaries_dir"
+  response_headers="$(mktemp)"
+  if [ -n "$extra_dictionaries" ]; then
+    parallel_task_list=$(mktemp -d)
+    parallel_task_list_output=$(mktemp -d)
+    (cd "$parallel_task_list"; touch $(seq "$(echo "$extra_dictionaries"|line_count)"))
+    parallel_task=0
+    for extra_dictionary in $extra_dictionaries; do
+    parallel_task=$(( parallel_task + 1 ))
+    (
+      dictionary_base="$(basename "$extra_dictionary")"
+      if [ "$dictionary_base" = index.dic ]; then
+        dictionary_base="$(get_hunspell_stem "$extra_dictionary")".dic
+      fi
+      get_extra_dictionary "$extra_dictionary" "$dictionary_base"
+      if echo "$extra_dictionary" | grep -q '\.dic$'; then
+        get_extra_dictionary "$(echo "$extra_dictionary" | sed -e 's/\.dic$/.aff/')" "$(echo "$dictionary_base" | sed -e 's/\.dic$/.aff/')"
+      fi
+      rm "$parallel_task_list/$parallel_task"
+    ) 2> "$parallel_task_list_output/$parallel_task.err" &
+    done
+    while find "$parallel_task_list/" -mindepth 1 -print -quit |grep -q .; do sleep 1; done
+    (
+      cd "$parallel_task_list_output"
+      for log in $(ls | sort -n); do
+        cat "$log"
+        rm -f "$log"
+      done
+    ) >&2
+  fi
+  rm -f "$response_headers"
+  echo "$dictionaries_dir"
+}
+
+set_up_reporter() {
+  set_up_tools
+  if to_boolean "$DEBUG"; then
+    echo 'env:'
+    env -0|sort -z|tr '\0' '\n'
+  fi
+  if [ -z "$GITHUB_EVENT_PATH" ] || [ ! -s "$GITHUB_EVENT_PATH" ]; then
+    GITHUB_EVENT_PATH=/dev/null
+  fi
+  if to_boolean "$DEBUG"; then
+    echo 'GITHUB_EVENT_PATH:'
+    cat "$GITHUB_EVENT_PATH"
+  fi
+  if to_boolean "$INPUT_USE_SARIF"; then
+    sarif_error=$(mktemp)
+    sarif_output=$(mktemp_json)
+    GH_TOKEN="$GITHUB_TOKEN" gh \
+    api \
+    --method POST \
+    -H "Accept: application/vnd.github+json" \
+    -f commit_sha=0000000000000000000000000000000000000000 \
+    -f ref=refs/tags/check-spelling-sarif-pre-flight-test \
+    -f sarif="" \
+    "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/code-scanning/sarifs" > "$sarif_output" 2> "$sarif_error" || true
+    if [ "$(jq -r '.status // empty' "$sarif_output")" = 403 ]; then
+      if grep -q -E 'must be enabled|is not enabled' "$sarif_error" ||
+        grep -q 'GH_TOKEN environment' "$sarif_error"; then
+        WARN_USE_SARIF_NEEDS_ADVANCED_SECURITY="$INPUT_USE_SARIF"
+      elif grep -Eq 'not authorized|not accessible' "$sarif_output"; then
+        WARN_USE_SARIF_NEEDS_SECURITY_EVENTS_WRITE="$INPUT_USE_SARIF"
+      else
+        echo "::notice ::Unexpected response from GitHub code-scanning (check-for-bug-report)"
+        WARN_USE_SARIF_NEEDS_ADVANCED_SECURITY="$INPUT_USE_SARIF"
+      fi
+      cat "$sarif_error"
+      echo
+      cat "$sarif_output"
+      echo
+    fi
+    if to_boolean "$INPUT_ONLY_CHECK_CHANGED_FILES"; then
+      WARN_USE_SARIF_ONLY_CHANGED_FILES="$INPUT_USE_SARIF"
+    fi
+    if to_boolean "$WARN_USE_SARIF_NEEDS_SECURITY_EVENTS_WRITE" || to_boolean "$WARN_USE_SARIF_ONLY_CHANGED_FILES" || to_boolean "$WARN_USE_SARIF_NEEDS_ADVANCED_SECURITY"; then
+      INPUT_USE_SARIF=
+    fi
+  fi
+  if ! to_boolean "$INPUT_USE_SARIF"; then
+    echo "::add-matcher::$spellchecker/reporter.json"
+  else
+    quit_without_error=1
+  fi
+}
+
+set_up_files() {
+  if [ "$GITHUB_EVENT_NAME" = "pull_request_target" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+    if [ -z "$GITHUB_HEAD_REF" ]; then
+      GITHUB_HEAD_REF="$(jq -r '.pull_request.head.ref // empty' "$GITHUB_EVENT_PATH")"
+    fi
+  fi
+  case "$INPUT_TASK" in
+    comment|collapse_previous_comment|pr_head_sha)
+      spell_check_this_json="$data_dir/spell_check_this.json"
+      if [ -e "$spell_check_this_json" ]; then
+        spell_check_this_repo=$(mktemp -d)
+        spelling_config=$(jq -r '.config // empty' "$spell_check_this_json")
+        spell_check_this_repo_url=$(jq -r '.url // empty' "$spell_check_this_json")
+        spell_check_this_repo_branch=$(jq -r '.branch  // empty' "$spell_check_this_json")
+        spell_check_this_config=$(jq -r '.path // empty' "$spell_check_this_json")
+        if [ -n "$spell_check_this_repo_url" ] &&
+          [ -n "$spell_check_this_repo_branch" ]; then
+          add_spell_check_this_text="use the spell-check-this repository"
+        fi
+      fi
+      if [ ! -e "$data_dir/apply.json" ]; then
+        echo '::warning ::Could not find apply.json (this can happen under `act`)'
+      else
+        THIS_GITHUB_JOB_ID=$(jq -r ".job // \"$THIS_GITHUB_JOB_ID\"" "$data_dir/apply.json")
+        INPUT_ONLY_CHECK_CHANGED_FILES=$(jq -r ".only_check_changed_files // \"$INPUT_ONLY_CHECK_CHANGED_FILES\"" "$data_dir/apply.json")
+      fi
+    ;;
+    ''|spelling)
+      if [ ! -d "$bucket/$project/" ] && [ -n "$INPUT_SPELL_CHECK_THIS" ]; then
+        spelling_config="$bucket/$project/"
+        spell_check_this_repo=$(mktemp -d)
+        spell_check_this_config=.github/actions/spelling/
+        spell_check_this_repo_name=${INPUT_SPELL_CHECK_THIS%%@*}
+        if [ "$spell_check_this_repo_name" != "$INPUT_SPELL_CHECK_THIS" ]; then
+          spell_check_this_repo_branch=${INPUT_SPELL_CHECK_THIS##*@}
+        fi
+      fi
+    ;;
+  esac
+  if [ -n "$spelling_config" ]; then
+    if git clone --depth 1 "https://github.com/$spell_check_this_repo_name" ${spell_check_this_repo_branch:+--branch "$spell_check_this_repo_branch"} "$spell_check_this_repo" > /dev/null 2> /dev/null; then
+      if [ ! -d "$spell_check_this_repo/$spell_check_this_config" ]; then
+        (
+          if [ -n "$workflow_path" ]; then
+            spell_check_this_config="$spell_check_this_config" perl -e '$pattern=quotemeta($ENV{INPUT_SPELL_CHECK_THIS}); while (<>) { next unless /$pattern/; $start=$-[0]+1; print "$ARGV:$.:$start ... $+[0], Warning - Could not find spell_check_this: $ENV{spell_check_this_config} (spell-check-this-error)\n" }' "$workflow_path"
+          else
+            echo "?:0:1, Warning - Could not find spell_check_this: $spell_check_this_config (spell-check-this-error)"
+          fi
+        ) >> "$early_warnings"
+      else
+        mkdir -p "$spelling_config"
+        cp -R "$spell_check_this_repo/$spell_check_this_config"/* "$spelling_config"
+        spell_check_this_repo_url=$(cd "$spell_check_this_repo"; git remote get-url origin)
+        (
+          echo "mkdir -p '$spelling_config'"
+          echo 'cp -i -R $('
+          echo 'cd $(mktemp -d)'
+          echo "git clone --depth 1 --no-tags $spell_check_this_repo_url ${spell_check_this_repo_branch:+--branch "$spell_check_this_repo_branch"} . > /dev/null 2> /dev/null"
+          echo "cd '$spell_check_this_config'; pwd"
+          echo ")/* '$spelling_config'"
+          echo "git add '$spelling_config'"
+        ) > "$instructions_preamble"
+        if [ ! -e "$data_dir/spell_check_this.json" ]; then
+          spell_check_this_repo_branch=$(git -C "$spell_check_this_repo" branch --show-current)
+          echo '{}' |
+          jq -r \
+            --arg config "$spelling_config" \
+            --arg url "$spell_check_this_repo_url" \
+            --arg branch "$spell_check_this_repo_branch" \
+            --arg path "$spell_check_this_config" \
+          '.config=$config|.url=$url|.branch=$branch|.path=$path|del(..|select(.==""))' > "$data_dir/spell_check_this.json"
+        fi
+        add_spell_check_this_text="use the spell-check-this repository"
+        load_env
+      fi
+    fi
+  fi
+  get_project_files word_expectations.words "$expect_path"
+  get_project_files expect.txt "$expect_path"
+  expect_files="$from_expanded_file"
+  expect_file="$from"
+  if [ -s "$expect_files" ]; then
+    expect_notes="$(mktemp)"
+    expect_collated="$(mktemp)"
+    expect_splitter_configuration=$(mktemp -d)
+    (
+      bang='!'
+      shortest_word="${INPUT_SHORTEST_WORD:-3}"
+      shortest_word_minus_one=$(( $shortest_word - 1 ))
+      longest_word="$INPUT_LONGEST_WORD"
+      allow_ed_suffix=$(
+        if apostrophe="'" perl -e '
+          my $a = $ENV{apostrophe};
+          exit 0 if $a =~ /$ENV{INPUT_PUNCTUATION_PATTERN}/;
+          exit 1;
+        '; then
+          echo "(?!'ed$)"
+        fi
+      )
+      echo '# Expect entries should be one entry per line'
+      echo '# Please do not mix a capitalized word with an initially capitalized word'
+      echo "$INPUT_UPPER_PATTERN(?:$INPUT_UPPER_PATTERN|$INPUT_LOWER_PATTERN|$INPUT_PUNCTUATION_PATTERN)*?$INPUT_LOWER_PATTERN(?:$INPUT_LOWER_PATTERN|$INPUT_PUNCTUATION_PATTERN)*$INPUT_UPPER_PATTERN"
+      echo
+      echo '# Expect entries should be one entry per line'
+      echo '# Please do not merge an uppercase / capitalized word after a lowercase word'
+      echo "(?:$INPUT_LOWER_PATTERN|$allow_ed_suffix$INPUT_PUNCTUATION_PATTERN){$shortest_word,$longest_word}(?:(?:$INPUT_UPPER_PATTERN|$allow_ed_suffix$INPUT_PUNCTUATION_PATTERN){$shortest_word,$longest_word}|$INPUT_UPPER_PATTERN(?:$INPUT_LOWER_PATTERN|$allow_ed_suffix$INPUT_PUNCTUATION_PATTERN){$shortest_word_minus_one,$longest_word})"
+      echo
+      echo '# Expect entries should not include non-word characters'
+      echo "(?$bang$INPUT_UPPER_PATTERN|$INPUT_LOWER_PATTERN|$INPUT_PUNCTUATION_PATTERN|\\s|=)."
+    ) > "$expect_splitter_configuration/forbidden.txt"
+    (
+      echo '# Allow commented lines in `expect.txt` files'
+      echo '^#.*'
+    ) > "$expect_splitter_configuration/patterns.txt"
+    env -i \
+    SHELL="$SHELL" \
+    PERL5OPT="$PERL5OPT" \
+    PATH="$PATH" \
+    LC_ALL="C" \
+    HOME="$HOME" \
+    early_warnings=/dev/null \
+    splitter_configuration="$expect_splitter_configuration" \
+    INPUT_LONGEST_WORD="$INPUT_LONGEST_WORD" \
+    INPUT_SHORTEST_WORD="$INPUT_SHORTEST_WORD" \
+    INPUT_IGNORE_PATTERN="$INPUT_IGNORE_PATTERN" \
+    INPUT_UPPER_PATTERN="$INPUT_UPPER_PATTERN" \
+    INPUT_LOWER_PATTERN="$INPUT_LOWER_PATTERN" \
+    INPUT_NOT_LOWER_PATTERN="$INPUT_NOT_LOWER_PATTERN" \
+    INPUT_NOT_UPPER_OR_LOWER_PATTERN="$INPUT_NOT_UPPER_OR_LOWER_PATTERN" \
+    INPUT_PUNCTUATION_PATTERN="$INPUT_PUNCTUATION_PATTERN" \
+    INPUT_USE_MAGIC_FILE=0 \
+    INPUT_USE_SARIF='' \
+    INPUT_DISABLE_CHECKS="single-line-file" \
+    sandbox="$splitter_sandbox" \
+    dict="$dict" \
+    spellchecker="$spellchecker" \
+    "$word_splitter" \
+    "$expect_path" 2> /dev/null |
+    counter_summary=/dev/null \
+    ignored_events="$INPUT_IGNORED" \
+    more_warnings=/dev/null \
+    warning_output="$expect_notes" \
+    INPUT_USE_SARIF='' INPUT_DISABLE_CHECKS=noisy-file "$word_collator" > "$expect_collated"
+    perl -pe 's/ \(.*\)//' "$expect_collated" > "$expect_path"
+
+    touch "$early_warnings.1"
+    cat "$expect_files" |
+    xargs -0 \
+    env -i \
+    SHELL="$SHELL" \
+    PERL5OPT="$PERL5OPT" \
+    PATH="$PATH" \
+    LC_ALL="C" \
+    HOME="$HOME" \
+    early_warnings="$early_warnings.1" \
+    splitter_configuration="$expect_splitter_configuration" \
+    INPUT_LONGEST_WORD="$INPUT_LONGEST_WORD" \
+    INPUT_SHORTEST_WORD="$INPUT_SHORTEST_WORD" \
+    INPUT_IGNORE_PATTERN="$INPUT_IGNORE_PATTERN" \
+    INPUT_UPPER_PATTERN="$INPUT_UPPER_PATTERN" \
+    INPUT_LOWER_PATTERN="$INPUT_LOWER_PATTERN" \
+    INPUT_NOT_LOWER_PATTERN="$INPUT_NOT_LOWER_PATTERN" \
+    INPUT_NOT_UPPER_OR_LOWER_PATTERN="$INPUT_NOT_UPPER_OR_LOWER_PATTERN" \
+    INPUT_PUNCTUATION_PATTERN="$INPUT_PUNCTUATION_PATTERN" \
+    INPUT_USE_MAGIC_FILE=0 \
+    INPUT_USE_SARIF='' \
+    INPUT_DISABLE_CHECKS="single-line-file" \
+    sandbox="$splitter_sandbox" \
+    dict="$dict" \
+    spellchecker="$spellchecker" \
+    "$word_splitter" 2> /dev/null |
+    early_warnings="$early_warnings.1" \
+    counter_summary=/dev/null \
+    ignored_events="$INPUT_IGNORED" \
+    more_warnings=/dev/null \
+    warning_output="$expect_notes" \
+    INPUT_USE_SARIF='' INPUT_DISABLE_CHECKS=noisy-file "$word_collator" > "$expect_collated.0"
+    "$expect_collator" "$expect_collated" "$expect_notes" >> "$early_warnings"
+  else
+    touch "$expect_path"
+  fi
+  new_expect_file="$append_to"
+  get_project_files file_ignore.patterns "$excludelist_path"
+  get_project_files excludes.txt "$excludelist_path"
+  excludes_files="$from_expanded_file"
+  excludes_file="$from"
+  if [ -s "$excludes_path" ]; then
+    cp "$excludes_path" "$excludes"
+  fi
+  expect_files="$expect_files" \
+  excludes_files="$excludes_files" \
+  new_expect_file="$new_expect_file" \
+  excludes_file="$excludes_file" \
+  spelling_config="${spelling_config:-"$bucket/$project/"}" \
+  "$spellchecker/generate-apply.pl" > "$data_dir/apply.json"
+  should_exclude_file=$data_dir/should_exclude.txt
+  should_exclude_patterns=$data_dir/should_exclude.patterns
+  remove_exclude_patterns=$data_dir/remove_exclude.patterns
+  counter_summary_file=$data_dir/counter_summary.json
+  candidate_summary="$data_dir/candidate_summary.txt"
+  forbidden_summary="$data_dir/forbidden_summary.txt"
+  get_project_files README.md "$(mktemp -d)/README.md"
+  if [ "$INPUT_TASK" = 'spelling' ]; then
+    get_project_files dictionary.words "$dictionary_path"
+    get_project_files dictionary.txt "$dictionary_path"
+    if [ -s "$dictionary_path" ]; then
+      cp "$dictionary_path" "$dict"
+    fi
+    if [ ! -s "$dict" ]; then
+      DICTIONARY_VERSION="${DICTIONARY_VERSION:-$INPUT_DICTIONARY_VERSION}"
+      DICTIONARY_URL="${DICTIONARY_URL:-$INPUT_DICTIONARY_URL}"
+      DICTIONARY_URL="$(
+        DICTIONARY_URL="$DICTIONARY_URL" \
+        DICTIONARY_VERSION="$DICTIONARY_VERSION" \
+        perl -e '
+          my $url = $ENV{DICTIONARY_URL};
+          my $version=$ENV{DICTIONARY_VERSION};
+          $url =~ s{\$DICTIONARY_VERSION}{$version}g;
+          print $url;
+        '
+      )"
+      if [ -z "$DICTIONARY_URL" ]; then
+        if [ -n "$ACT" ]; then
+          (
+            echo "This workflow appears to be running under nektos/act"
+            echo "Unfortunately, this run has hit: https://github.com/nektos/act/issues/655"
+            echo
+            echo "In order to run locally, please use:"
+            echo
+            if [ -n "$THIS_GITHUB_JOB_ID" ]; then
+              echo "jobs:"
+              echo "  $THIS_GITHUB_JOB_ID:"
+              echo "    steps:"
+            fi
+            echo "      with:"
+            echo "        dictionary_url: fill_this_in"
+            if [ -z "$INPUT_CONFIG" ]; then
+              echo "        config: fill_this_in"
+            fi
+            if [ -z "$INPUT_DICTIONARY_SOURCE_PREFIXES" ]; then
+              echo "        dictionary_source_prefixes: fill_this_in"
+            fi
+            if [ -z "$INPUT_DICTIONARY_VERSION" ]; then
+              echo "        dictionary_version: fill_this_in"
+            fi
+            echo
+            echo "You can use the defaults from https://github.com/check-spelling/check-spelling/blob/HEAD/action.yml"
+            echo "Note: you may need to omit backslashes for the dictionary_url."
+          ) >&2
+          exit 1
+        fi
+        (
+          echo 'This script was run without essential configuration. Please ensure `INPUT_DICTIONARY_URL` is set. (broken-configuration)'
+        ) >&2
+        exit 1
+      fi
+      eval download_or_quit_with_error "$DICTIONARY_URL" "$dict"
+    fi
+    if [ -n "$INPUT_CHECK_EXTRA_DICTIONARIES" ]; then
+      begin_group 'Retrieving check extra dictionaries'
+      build_dictionary_alias_pattern
+      check_extra_dictionaries="$(
+        echo "$INPUT_EXTRA_DICTIONARIES $INPUT_EXTRA_DICTIONARIES $INPUT_CHECK_EXTRA_DICTIONARIES" |
+        words_to_lines |
+        sort |
+        uniq -u
+      )"
+      if [ -n "$check_extra_dictionaries" ]; then
+        check_extra_dictionaries_canary=$(mktemp)
+        export check_extra_dictionaries_dir="$(get_extra_dictionaries check "$check_extra_dictionaries" "$check_extra_dictionaries_canary")"
+        if [ ! -e "$check_extra_dictionaries_canary" ]; then
+          github_step_summary_dictionaries_failed \
+            'check' \
+            "$check_extra_dictionaries"
+        fi
+      fi
+      end_group
+    fi
+    if [ -n "$INPUT_EXTRA_DICTIONARIES" ]; then
+      begin_group 'Retrieving extra dictionaries'
+      build_dictionary_alias_pattern
+      extra_dictionaries_canary=$(mktemp)
+      extra_dictionaries_dir="$(get_extra_dictionaries extra "$INPUT_EXTRA_DICTIONARIES" "$extra_dictionaries_canary")"
+      if [ -n "$extra_dictionaries_dir" ]; then
+        if [ ! -e "$extra_dictionaries_canary" ]; then
+          github_step_summary_dictionaries_failed \
+            'extra' \
+            "$INPUT_EXTRA_DICTIONARIES"
+          if [ -n "$INPUT_CHECK_EXTRA_DICTIONARIES" ]; then
+            end_group
+            begin_group 'Check default extra dictionaries'
+            check_extra_dictionaries="$(
+              "$get_yaml_value" "$GITHUB_ACTION_PATH/action.yml" inputs.check_extra_dictionaries.default |
+              words_to_lines |
+              sort |
+              uniq -u
+            )"
+            if [ -n "$check_extra_dictionaries" ]; then
+              ORIG_INPUT_DICTIONARY_SOURCE_PREFIXES="$INPUT_DICTIONARY_SOURCE_PREFIXES"
+              INPUT_DICTIONARY_SOURCE_PREFIXES=$(
+              "$get_yaml_value" "$GITHUB_ACTION_PATH/action.yml" inputs.dictionary_source_prefixes.default)
+              dictionary_alias_pattern=
+              build_dictionary_alias_pattern
+              fallback_extra_dictionaries_canary=$(mktemp)
+              fallback_extra_dictionaries_dir="$(get_extra_dictionaries fallback "$check_extra_dictionaries" "$fallback_extra_dictionaries_canary")"
+              if [ ! -e "$fallback_extra_dictionaries_canary" ]; then
+                fallback_extra_dictionaries_dir=
+                github_step_summary_dictionaries_failed \
+                  'fallback' \
+                  "$check_extra_dictionaries"
+              fi
+              if [ -d "$fallback_extra_dictionaries_dir" ]; then
+                # should handle hunspell
+                if [ -n "$check_extra_dictionaries_dir" ] && [ -d "$check_extra_dictionaries_dir" ]; then
+                  (cd "$fallback_extra_dictionaries_dir"; for a in ./*; do mv "$a" ".$(basename "$a")" "$check_extra_dictionaries_dir" & done)
+                else
+                  check_extra_dictionaries_dir="$fallback_extra_dictionaries_dir"
+                  fallback_extra_dictionaries_dir=
+                fi
+                extra_dictionary_limit=100
+              fi
+              INPUT_DICTIONARY_SOURCE_PREFIXES="$ORIG_INPUT_DICTIONARY_SOURCE_PREFIXES"
+            fi
+          fi
+        fi
+        if [ -d "$extra_dictionaries_dir" ]; then
+          if find "$extra_dictionaries_dir" -type f -name '*.aff' -o -name '*.dic' | grep -q .; then
+            hunspell_dictionary_path=$(mktemp -d)
+          fi
+          (
+            cd "$extra_dictionaries_dir"
+            if [ -d "$hunspell_dictionary_path" ]; then
+              for a in ./*.aff ./*.dic; do mv "$a" ".$(basename "$a")" "$hunspell_dictionary_path" 2>/dev/null || true & done
+            fi
+            wait
+            # Items that aren't proper should be moved to patterns instead
+            "$spellchecker/dictionary-word-filter.pl" ./* | sort -u >> "$dict"
+          )
+        fi
+      fi
+      end_group
+    fi
+    write_non_empty_item() {
+      if [ -n "$1" ]; then
+        echo "$1" > "$2"
+      fi
+    }
+    write_non_empty_item "$INPUT_CHECK_EXTRA_DICTIONARIES" "$check_extra_dictionaries_list"
+    write_non_empty_item "$INPUT_EXTRA_DICTIONARIES" "$extra_dictionaries_list"
+    write_non_empty_item "$INPUT_DICTIONARY_SOURCE_PREFIXES" "$dictionary_source_prefixes_json"
+    get_project_files dictionary_additions.words "$allow_path"
+    get_project_files allow.txt "$allow_path"
+    if [ -s "$allow_path" ]; then
+      cat "$allow_path" >> "$dict"
+    fi
+    get_project_files dictionary_removals.patterns "$reject_path"
+    get_project_files reject.txt "$reject_path"
+    if [ -s "$reject_path" ]; then
+      dictionary_temp="$(mktemp)"
+      if grep_v_string '^('"$(xargs < "$reject_path" | tr " " '|')"')$' < "$dict" > "$dictionary_temp"; then
+        cat "$dictionary_temp" > "$dict"
+      fi
+    fi
+    get_project_files file_exclusive.patterns "$only_path"
+    get_project_files only.txt "$only_path"
+    if [ -s "$only_path" ]; then
+      cp "$only_path" "$only"
+    fi
+    get_project_files line_forbidden.patterns "$forbidden_path"
+    get_project_files candidate.patterns "$candidates_path"
+  else
+    if [ -s "$check_extra_dictionaries_list" ]; then
+      export INPUT_DICTIONARY_SOURCE_PREFIXES=$(cat "$dictionary_source_prefixes_json")
+    fi
+    if [ -s "$check_extra_dictionaries_list" ]; then
+      export INPUT_CHECK_EXTRA_DICTIONARIES=$(cat "$check_extra_dictionaries_list")
+    fi
+    if [ -s "$extra_dictionaries_list" ]; then
+      export INPUT_EXTRA_DICTIONARIES=$(cat "$extra_dictionaries_list")
+    fi
+  fi
+  extra_dictionaries_cover_entries="$(mktemp)"
+  get_project_files line_masks.patterns "$patterns_path"
+  get_project_files patterns.txt "$patterns_path"
+  new_patterns_file="$append_to"
+  if [ -s "$patterns_path" ]; then
+    cp "$patterns_path" "$patterns"
+  fi
+  get_project_files advice.md "$advice_path"
+  get_project_files sarif.json "$sarif_overlay_path"
+  get_project_files config.json "$config_json_path"
+  if to_boolean "$INPUT_CHECK_HOMOGLYPHS"; then
+    ignored_events="$INPUT_IGNORED,empty-file" get_project_files homoglyph.list "$homoglyph_list_path"
+    if [ ! -s "$homoglyph_list_path" ]; then
+      homoglyph_list_path="$spellchecker/homoglyph.list"
+    fi
+  fi
+
+  if [ -n "$debug" ]; then
+    echo "Clean up from previous run"
+  fi
+  rm -f "$run_output"
+  if [ -d "$bucket/$project/" ] ; then
+    (cd "$bucket/$project/"; git ls-files -z . ) |
+    prefix="$bucket/$project" perl -e '
+      $/="\0";
+      my $prefix=$ENV{prefix};
+      while (<>) {
+        next if m</>;
+        print "$prefix/$_";
+      }
+    ' |
+    tee "$seen_config_files" |
+    used_config_files="$used_config_files" perl -e '
+      use File::Spec;
+      my $base = $ENV{INPUT_EXPERIMENTAL_PATH} || "";
+      $/="\0";
+      my %used_files;
+      open my $used, "<", $ENV{used_config_files};
+      for my $file (<$used>) {
+        $file =~ s/\0//;
+        $used_files{$file} = 1;
+      }
+      close $used;
+      for my $file (<>) {
+        $file =~ s/\0//;
+        next if defined $used_files{$file};
+        $file = File::Spec->abs2rel($file, $base);
+        my $len = length $file;
+        print "$file:1:1 ... $len, Notice - Config file not used (unused-config-file)\n";
+      }
+    ' >> "$early_warnings"
+  fi
+}
+
+welcome() {
+  echo "Checking spelling..."
+  if to_boolean "$DEBUG"; then
+    begin_group 'Excluded paths'
+    if [ -e "$excludes" ]; then
+      echo 'Excluded paths:'
+      cat "$excludes"
+    else
+      echo 'No excluded paths file'
+    fi
+    end_group
+    begin_group 'Only paths restriction'
+    if [ -e "$only" ]; then
+      echo 'Only paths restriction:'
+      cat "$only"
+    else
+      echo 'No only paths restriction file'
+    fi
+    end_group
+  fi
+  if [ -n "$INPUT_EXPERIMENTAL_PATH" ]; then
+    cd "$INPUT_EXPERIMENTAL_PATH"
+  fi
+}
+
+get_private_refs() {
+  remote="$1"
+  source_ref="$2"
+  dest_ref="$3"
+  if [ -e .git/shallow ]; then
+    if [ -z "$UNSHALLOW" ]; then
+      UNSHALLOW=--unshallow
+      echo "Unshallowing (this may take a while)" >&2
+    fi
+  else
+    UNSHALLOW=
+  fi
+
+  git_fetch_log="$(mktemp)"
+  git_fetch_err="$(mktemp)"
+  if ! git fetch -f "$remote" ${UNSHALLOW:+"$UNSHALLOW"} "$source_ref":refs/private/"$dest_ref" > "$git_fetch_log" 2> "$git_fetch_err"; then
+    echo "git fetch '$remote' ${UNSHALLOW:+"$UNSHALLOW"} '$source_ref:refs/private/$dest_ref' -- failed:"
+    cat "$git_fetch_err"
+    cat "$git_fetch_log"
+    if ! git fetch -f . "$source_ref":refs/private/"$dest_ref" > "$git_fetch_log" 2> "$git_fetch_err"; then
+      echo "git fetch . '$source_ref:refs/private/$dest_ref' -- also failed:"
+      cat "$git_fetch_err"
+      cat "$git_fetch_log"
+    fi
+  fi
+}
+
+get_before() {
+  if [ -z "$BEFORE" ]; then
+    COMPARE="$(jq -r '.compare // empty' "$GITHUB_EVENT_PATH" 2>/dev/null)"
+    AFTER="$(jq -r '.pull_request.head.sha // .after // empty' "$GITHUB_EVENT_PATH")"
+    AFTER="${AFTER:-$GITHUB_SHA}"
+    if [ -n "$COMPARE" ]; then
+      BEFORE="$(echo "$COMPARE" | perl -ne 'if (m{/compare/(.*)\.\.\.}) { print $1; } elsif (m{/commit/([0-9a-f]+)$}) { print "$1^"; };')"
+      BEFORE="$(call_curl \
+        "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$BEFORE" | jq -r '.sha // empty')"
+    elif [ -n "$GITHUB_BASE_REF" ]; then
+      BEFORE="$GITHUB_BASE_REF"
+    elif [ -n "$AFTER" ] && [ -n "$GITHUB_REF_NAME" ]; then
+      BEFORE="$(git reflog --no-abbrev --decorate|grep -v "$AFTER" |grep "$GITHUB_REF_NAME" | head -1 | perl -pe 's/\s.*//')"
+    else
+      BEFORE="$(git rev-parse "$AFTER"~)"
+    fi
+    if [ -n "$BEFORE" ]; then
+      get_private_refs origin "$BEFORE" before
+    fi
+    get_private_refs origin "$AFTER" after
+    if ! git show-ref --exists refs/private/after 2>/dev/null; then
+      get_private_refs origin "$(git rev-parse HEAD)" after
+      github_commit_repository=$(git remote get-url origin | perl -ne 'next unless m{^.+[:/]+([^/]+/[^/]+?)(?:\.git|)$}; print $1')
+    fi
+  fi
+}
+
+append_file_to_file_list() {
+  echo "$1" | tr "\n" "\0" >> "$file_list"
+}
+
+append_commit_message_to_file_list() {
+  commit_message_file="$commit_messages/$1.message"
+  git log -1 --format='%B%n' "$1" > "$commit_message_file"
+  append_file_to_file_list "$commit_message_file"
+}
+
+get_file_list() {
+  xargs -0 -n1 < "$file_list" | sort-file
+}
+
+build_file_list() {
+  (
+    if to_boolean "$INPUT_ONLY_CHECK_CHANGED_FILES"; then
+      get_before
+    fi
+    if [ -n "$BEFORE" ]; then
+      echo "Only checking files changed from $BEFORE" >&2
+      git diff -z --name-status refs/private/before |
+      perl -e 'while (<>) {
+        while (s/(\w+?)\0(.*?)\0//) {
+          next if $1 =~ /D/;
+          print "$2\0";
+          }
+        }'
+    else
+      INPUT_ONLY_CHECK_CHANGED_FILES=''
+      git 'ls-files' -z $RECURSE_SUBMODULES 2> /dev/null
+    fi
+  ) |\
+    exclude_file="$excludes" \
+    only_file="$only" \
+      "$scope_files" > "$1"
+}
+
+get_ocr_cache_ref() {
+  ref="$1"
+  event="$2"
+  artifacts_url=$(
+    call_curl "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/${workflow_path##*/}/runs?branch=$ref&event=$event&per_page=1" | jq -r '.workflow_runs[].artifacts_url // empty' 2>/dev/null
+  )
+  if [ -z "$artifacts_url" ]; then
+    false
+    return
+  fi
+  artifacts=$(mktemp)
+  keep_headers=1 call_curl "$artifacts_url" > $artifacts
+  artifact=$(jq -r '.artifacts[] | select(.name|match ("^ocr")).id // empty' "$artifacts" | sort -n | tail -1)
+  if [ -z "$artifact" ]; then
+    false
+    return
+  fi
+  artifact_zip=$(mktemp)
+  call_curl "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$artifact_zip"
+  if [ "$(head -c2 "$artifact_zip")" != 'PK' ]; then
+    false
+    return
+  fi
+  unzip -q -o "$artifact_zip" -d "$ocr_directory" && rm "$artifact_zip"
+  # grep -i '^link:' "$response_headers"
+}
+
+get_ocr_cache() {
+  if get_ocr_cache_ref "$GITHUB_REF_NAME" "$GITHUB_EVENT_NAME"; then
+    return
+  fi
+  case "$GITHUB_EVENT_NAME" in
+    push)
+      ;;
+    pull_request|pull_request_target)
+      [ "$default_branch" != "$GITHUB_BASE_REF" ] && get_ocr_cache_ref "$GITHUB_BASE_REF" push ||
+      get_ocr_cache_ref "$default_branch" push
+      ;;
+    *)
+      get_ocr_cache_ref "$GITHUB_REF_NAME" push
+      ;;
+  esac
+}
+
+run_spell_check() {
+  if [ "$INPUT_TASK" != 'spelling' ]; then
+    report_cached_warning_output
+    return
+  fi
+  echo "started-at=$(perl -e 'use POSIX qw(strftime);
+my $now = time();
+print strftime(q<%Y-%m-%dT%H:%M:%SZ>, gmtime($now));
+')" >> "$GITHUB_OUTPUT"
+  set_output_variable internal_state_directory "$data_dir"
+
+  synthetic_base="/tmp/check-spelling/$GITHUB_REPOSITORY"
+  ocr_directory="$synthetic_base/ocr"
+  echo "^\Q$synthetic_base/\E" >> "$patterns"
+  mkdir -p "$synthetic_base"
+  if to_boolean "$INPUT_CHECK_IMAGES"; then
+    get_ocr_cache || true
+  fi
+
+  build_file_list "$file_list"
+  if to_boolean "$INPUT_CHECK_FILE_NAMES"; then
+    if [ -s "$file_list" ]; then
+      check_file_names="$synthetic_base/paths-of-checked-files.txt"
+      get_file_list > "$check_file_names"
+      append_file_to_file_list "$check_file_names"
+    fi
+  fi
+  if [ -n "$INPUT_CHECK_COMMIT_MESSAGES" ]; then
+    commit_messages="$synthetic_base/commits"
+    mkdir -p "$commit_messages"
+    if [ 1 = "$(echo "$INPUT_CHECK_COMMIT_MESSAGES" | "$find_token" commits)" ]; then
+      get_before
+      log_revs=$(mktemp)
+      git log --format='%H' ${BEFORE:+refs/private/before..}refs/private/after > "$log_revs"
+      if [ -n "$workflow_path" ]; then
+        workflow_blame=$(mktemp)
+        partial_clone_filter_key=remote.origin.partial"clone"filter
+        partial_clone_filter_value=$(git config "$partial_clone_filter_key" || true)
+        if echo "$partial_clone_filter_value" | grep -q tree:0; then
+          git config --unset "$partial_clone_filter_key"
+          git_fetch_log=$(mktemp)
+          if ! (git fetch -q --refetch origin HEAD 2>&1) > "$git_fetch_log"; then
+            error=$?
+            cat "$git_fetch_log"
+            if head -4 "$git_fetch_log" | grep -q 'The requested URL returned error: 504'; then
+              echo '::warning ::git error... trying again'
+              git fetch -q --refetch origin HEAD
+            else
+              echo '::error title=Unexpected git error::Failed to convert partial clone to regular clone (git-partial-clone-to-regular-failed)'
+              exit $error
+            fi
+          fi
+          git config "$partial_clone_filter_key" "$partial_clone_filter_value"
+        fi
+        if git blame HEAD -- "$workflow_path" > "$workflow_blame" 2>/dev/null; then
+          workflow_commits_revs=$(mktemp)
+          "$get_commits_for_check_commit_message" "$workflow_blame" | sort -u |xargs -n1 git rev-parse > "$workflow_commits_revs"
+          clip_log=$(mktemp)
+          while IFS= read -r commit_sha; do
+            grep -q "$commit_sha" "$log_revs" && echo "$commit_sha" || true
+          done < "$workflow_commits_revs" > "$clip_log"
+          if [ -s "$clip_log" ]; then
+            clipped_log_revs=$(mktemp)
+            while IFS= read -r commit_sha; do
+              git log --format='%H' "$commit_sha..refs/private/after" >> "$clipped_log_revs"
+            done < "$clip_log"
+            sort -u "$clipped_log_revs" > "$log_revs"
+            if [ ! -s "$log_revs" ]; then
+              KEY=check_commit_messages \
+              VALUE="$INPUT_CHECK_COMMIT_MESSAGES" \
+              MESSAGE="Warning - Only commits added after ${b}check_commit_messages${b} is changed will be checked (no-new-commits-to-check)" \
+              file="$workflow_path" \
+              check_yaml_key_value "$validate_workflow_path"
+            fi
+          fi
+        fi
+      fi
+      while IFS= read -r commit_sha; do
+        append_commit_message_to_file_list "$commit_sha"
+      done < "$log_revs"
+      if [ 1 = "$(echo "$INPUT_CHECK_COMMIT_MESSAGES" | "$find_token" commit)" ]; then
+        # warning about duplicate flag
+        echo > /dev/null
+      fi
+    elif [ 1 = "$(echo "$INPUT_CHECK_COMMIT_MESSAGES" | "$find_token" commit)" ]; then
+      append_commit_message_to_file_list "${GITHUB_BASE_REF:-$GITHUB_REF}"
+    fi
+
+    pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+    if [ -n "$pr_number" ]; then
+      pr_details_path="$synthetic_base/pull-request/$pr_number"
+      mkdir -p "$pr_details_path"
+      if [ 1 = "$(echo "$INPUT_CHECK_COMMIT_MESSAGES" | "$find_token" title)" ]; then
+        pr_title_file="$pr_details_path/summary.txt"
+        jq -r .pull_request.title "$GITHUB_EVENT_PATH" > "$pr_title_file"
+        append_file_to_file_list "$pr_title_file"
+      fi
+      if [ 1 = "$(echo "$INPUT_CHECK_COMMIT_MESSAGES" | "$find_token" description)" ]; then
+        pr_issue_url=$(jq -r '.pull_request._links.issue.href // empty' "$GITHUB_EVENT_PATH")
+        if [ -n "$pr_issue_url" ]; then
+          pr_issue_description_id="$(
+            call_curl "$pr_issue_url" |
+            jq -r '.id // empty'
+          )"
+        fi
+        pr_description_file="$pr_details_path/description${pr_issue_description_id:+".$pr_issue_description_id"}.txt"
+        jq -r .pull_request.body "$GITHUB_EVENT_PATH" > "$pr_description_file"
+        append_file_to_file_list "$pr_description_file"
+      fi
+    fi
+  fi
+  count="$(perl -e '$/="\0"; $count=0; while (<>) {s/\R//; $count++ if /./;}; print $count;' "$file_list")"
+  if [ "$count" = "0" ]; then
+    (
+      if ! to_boolean "$INPUT_CHECKOUT" && [ ! -d .git ]; then
+        no_files_to_check_message='Error - No files to check. Did you forget to check out the repository? (missing-checkout)'
+      else
+        no_files_to_check_message='Warning - No files to check (no-files-to-check)'
+      fi
+      if [ -e "$workflow_path" ]; then
+        workflow_path_for_checkout="$workflow_path"
+      else
+        workflow_path_for_checkout="$INPUT_INTERNAL_STATE_DIRECTORY/workflow.yml"
+      fi
+      if [ -s "$workflow_path_for_checkout" ]; then
+        KEY="jobs$n$THIS_GITHUB_JOB_ID${n}steps${n}uses" \
+        VALUE="$GH_ACTION_REPOSITORY@$GH_ACTION_REF" \
+        MESSAGE="$no_files_to_check_message" \
+        file="$workflow_path" \
+        check_yaml_key_value "$workflow_path_for_checkout"
+      else
+        echo "$workflow_path:0:0 ... 0, $no_files_to_check_message"
+      fi
+    ) >> "$early_warnings"
+  fi
+  begin_group "Spell checking ($count) files"
+  get_file_list
+  end_group
+  queue_size="$((count / job_count / 4))"
+  if [ $queue_size -lt 4 ]; then
+    queue_size="$((count / job_count))"
+    if [ $queue_size -lt 1 ]; then
+      queue_size=1
+    fi
+  fi
+
+  begin_group 'Spell check'
+  warning_output="$(mktemp -d)/warnings.txt"
+  more_warnings="$data_dir/more_warnings.txt"
+  cat "$file_list" |\
+  env -i \
+    SHELL="$SHELL" \
+    PERL5OPT="$PERL5OPT" \
+    PATH="$PATH" \
+    LC_ALL="C" \
+    HOME="$HOME" \
+    INPUT_LONGEST_WORD="$INPUT_LONGEST_WORD" \
+    INPUT_SHORTEST_WORD="$INPUT_SHORTEST_WORD" \
+    INPUT_LARGEST_FILE="$INPUT_LARGEST_FILE" \
+    INPUT_DISABLE_CHECKS="$INPUT_DISABLE_CHECKS" \
+    INPUT_CANDIDATE_EXAMPLE_LIMIT="$INPUT_CANDIDATE_EXAMPLE_LIMIT" \
+    INPUT_USE_MAGIC_FILE="$INPUT_USE_MAGIC_FILE" \
+    INPUT_IGNORE_PATTERN="$INPUT_IGNORE_PATTERN" \
+    INPUT_UPPER_PATTERN="$INPUT_UPPER_PATTERN" \
+    INPUT_LOWER_PATTERN="$INPUT_LOWER_PATTERN" \
+    INPUT_NOT_LOWER_PATTERN="$INPUT_NOT_LOWER_PATTERN" \
+    INPUT_NOT_UPPER_OR_LOWER_PATTERN="$INPUT_NOT_UPPER_OR_LOWER_PATTERN" \
+    INPUT_PUNCTUATION_PATTERN="$INPUT_PUNCTUATION_PATTERN" \
+    INPUT_IGNORE_NEXT_LINE="$INPUT_IGNORE_NEXT_LINE" \
+    INPUT_CHECK_IMAGES="$INPUT_CHECK_IMAGES" \
+    INPUT_CHECK_HOMOGLYPHS="$INPUT_CHECK_HOMOGLYPHS" \
+    dict="$dict" \
+    homoglyph_list_path="$homoglyph_list_path" \
+    hunspell_dictionary_path="$hunspell_dictionary_path" \
+    ocr_directory="$ocr_directory" \
+    check_file_names="$check_file_names" \
+    splitter_configuration="$splitter_configuration" \
+    splitter_timeout="$INPUT_WORD_SPLITTER_TIMEOUT" \
+    early_warnings="$early_warnings" \
+    spellchecker="$spellchecker" \
+  xargs -0 -n$queue_size "-P$job_count" "$word_splitter" |\
+    expect="$expect_path" \
+    warning_output="$warning_output" \
+    more_warnings="$more_warnings" \
+    should_exclude_file="$should_exclude_file" \
+    counter_summary="$counter_summary_file" \
+    ignored_events="$INPUT_IGNORED" \
+    unknown_word_limit="$INPUT_UNKNOWN_WORD_LIMIT" \
+    INPUT_ONLY_CHECK_CHANGED_FILES="$INPUT_ONLY_CHECK_CHANGED_FILES" \
+    candidates_path="$candidates_path" \
+    candidate_summary="$candidate_summary" \
+    forbidden_path="$forbidden_path" \
+    forbidden_summary="$forbidden_summary" \
+    check_file_names="$check_file_names" \
+    pr_title_file="$pr_title_file" \
+    pr_description_file="$pr_description_file" \
+    commit_messages="$commit_messages" \
+    timing_report="$timing_report" \
+    "$word_collator" |\
+  "$strip_word_collator_suffix" > "$run_output"
+  word_splitter_status="${PIPESTATUS[2]} ${PIPESTATUS[3]}"
+  sort -u "$warning_output" > "$warning_output.0"; mv "$warning_output.0" "$warning_output"
+  check_file_names_warning="$(check_file_names="$check_file_names" perl -i -e '
+    while (<>) {
+      if (s/^$ENV{check_file_names}:\d+:\d+ \.\.\. \d+, (Warning - Skipping .*?\([^)]+-list\))/$1/ ||
+          s/^$ENV{check_file_names}:\d+:\d+ \.\.\. \d+, (Warning - Skipping) `$ENV{check_file_names}`(.*)(\))/$1 file names$2-list$3/
+        ) {
+        print STDERR;
+      } else {
+        print;
+      }
+    }' "$warning_output" 2>&1
+  )"
+  if [ -n "$check_file_names_warning" ]; then
+    (
+      output="$more_warnings" \
+      KEY=check_file_names \
+      VALUE="$INPUT_CHECK_FILE_NAMES" \
+      MESSAGE="$check_file_names_warning" \
+      file="$workflow_path" \
+      check_yaml_key_value "$validate_workflow_path"
+    ) >&2
+  fi
+  warning_output_unsorted="$data_dir/warning_output_unsorted.txt"
+  mv "$warning_output" "$warning_output_unsorted"
+  sort-file < "$warning_output_unsorted" > "$warning_output"
+  cat "$more_warnings" >> "$warning_output"
+  commit_messages="$commit_messages" \
+  pr_details_path="$pr_details_path" \
+  ocr_directory="$ocr_directory" \
+  severity_level="$severity_level" \
+  severity_list="$severity_list" \
+  github_commit_repository="$github_commit_repository" \
+  $adjust_severities "$warning_output"
+  cat "$warning_output" >&2
+  . "$severity_list"
+  set_output_variable warnings "$warning_output"
+  if [ -d "$ocr_directory" ]; then
+    set_output_variable ocr_directory "$ocr_directory"
+  fi
+  if to_boolean "$INPUT_USE_SARIF"; then
+    SARIF_FILE="$(mktemp).sarif.json"
+    UPLOAD_SARIF_LIMITED=$(mktemp)
+    echo UPLOAD_SARIF="$SARIF_FILE" >> "$GITHUB_ENV"
+    echo UPLOAD_SARIF_LIMITED="$UPLOAD_SARIF_LIMITED" >> "$GITHUB_ENV"
+    warning_output="$warning_output" "$generate_sarif" > "$SARIF_FILE" || (
+      echo "::error title=Sarif generation failed::Please file a bug (sarif-generation-failed)"
+      cp "$spellchecker/sarif.json" "$SARIF_FILE"
+    )
+    jq -c '.runs[0].results = .runs[0].results[0:25000]' "$SARIF_FILE" > "$UPLOAD_SARIF_LIMITED"
+  fi
+  end_group
+  if [ "$word_splitter_status" != '0 0' ]; then
+    echo "$word_splitter failed ($word_splitter_status)"
+    quit 2
+  fi
+}
+
+relative_note() {
+  if [ -n "$bucket" ] && [ -n "$project" ]; then
+    from="$(project_file_path "$file")"
+    case "$from" in
+      .*)
+        ;;
+      ssh://git@*|git@*|gs://|*://*)
+        echo '(They can be run anywhere with permissions to update the bucket.)';;
+    esac
+  fi
+}
+to_retrieve_expect() {
+  expect_file=expect.txt
+  case "$bucket" in
+    '')
+      echo '# no bucket defined -- you can specify one per the README.md using the file defined below:';;
+    ssh://git@*|git@*)
+      echo "git clone --depth 1 '$bucket' --single-branch --branch '$project' metadata; cp metadata/expect.txt .";;
+    gs://*)
+      echo "gsutil cp -Z '$(project_file_path expect.txt)' expect.txt";;
+    *://*)
+      echo "curl -L -s '$(project_file_path expect.txt)' -o expect.txt";;
+  esac
+}
+
+calculate_exclude_patterns() {
+  to_boolean "$INPUT_ONLY_CHECK_CHANGED_FILES" ] || \
+  [ -s "$should_exclude_patterns" ] || \
+  [ ! -s "$should_exclude_file" ] && \
+    return
+  if [ -s "$file_list" ]; then
+    calculate_exclude_file_list="$file_list"
+  else
+    calculate_exclude_file_list=$(mktemp)
+    build_file_list "$calculate_exclude_file_list" 2>/dev/null
+  fi
+  file_list="$calculate_exclude_file_list" \
+  should_exclude_file="$should_exclude_file" \
+  remove_excludes_file="$remove_exclude_patterns" \
+  should_exclude_patterns="$should_exclude_patterns" \
+  current_exclude_patterns="$excludes" \
+    "$suggest_excludes" ||
+    echo "::error title=Excludes generation failed::Please file a bug (excludes-generation-failed)" >&2
+}
+
+remove_items() {
+  if to_boolean "$INPUT_ONLY_CHECK_CHANGED_FILES"; then
+    echo "<!-- Because only_check_changed_files is active, checking for obsolete items cannot be performed-->"
+  else
+    if [ ! -s "$remove_words" ]; then
+      perl -ne 'next unless s/^-([^-])/$1/; print' "$diff_output" > "$remove_words"
+    fi
+    if [ -s "$remove_words" ]; then
+      (
+        echo -n "
+        <details><summary>These words are not needed and should be removed
+        </summary>"
+        perl -e 'my $i = 0; while (<>) { s/\n//; if ($i == 0) { $i = 1; } else { print " " }; print }' "$remove_words"
+        echo "$N</details><p></p>$n"
+      ) | strip_lead_and_blanks
+      set_output_variable stale_words "$remove_words"
+    else
+      rm "$fewer_misspellings_canary"
+    fi
+  fi
+}
+
+get_action_log_overview() {
+  if [ -n "$GITHUB_SERVER_URL" ] && [ -n "$GITHUB_REPOSITORY" ] && [ -n "$GITHUB_RUN_ID" ]; then
+    echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  fi
+}
+
+get_has_errors() {
+  if [ -z "$has_errors" ] &&
+    [ -s "$counter_summary_file" ] &&
+    [ -z "$counter_summary_keys" ]; then
+    counter_summary_keys=$(mktemp)
+    jq -r 'keys | .[]' "$counter_summary_file" > "$counter_summary_keys"
+    if grep -E -q -v "$(echo "$INPUT_IGNORED,$INPUT_WARNINGS,$INPUT_NOTICES" | events_to_regular_expression)" "$counter_summary_keys" 2> /dev/null; then
+      has_errors=1
+    fi
+    if grep -E -q "$(
+      echo "$INPUT_WARNINGS" | events_to_regular_expression
+    )" "$counter_summary_keys" 2> /dev/null; then
+      has_warnings=1
+    fi
+    if grep -E -q "$(
+      echo "$INPUT_NOTICES" | events_to_regular_expression
+    )" "$counter_summary_keys" 2> /dev/null; then
+      has_notices=1
+    fi
+  fi
+}
+
+get_job_info_and_step_info() {
+  if [ -z "$step_number" ] && [ -z "$job_log" ]; then
+    run_info=$(mktemp)
+    if [ -n "$GITHUB_API_URL" ] &&
+      [ -n "$GITHUB_REPOSITORY" ] &&
+      call_curl "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$run_info" 2>/dev/null; then
+      jobs_url=$(jq -r '.jobs_url // empty' "$run_info")
+      if [ -n "$jobs_url" ]; then
+        jobs_info=$(mktemp)
+        if call_curl "$jobs_url" > "$jobs_info" 2>/dev/null; then
+          job=$(mktemp)
+          jq -r '.jobs[] | select(.status=="in_progress" and .runner_name=="'"$RUNNER_NAME"'" and .run_attempt=='"${GITHUB_RUN_ATTEMPT:-1}"')' "$jobs_info" > "$job" 2>/dev/null
+          job_log=$(jq -r .html_url "$job")
+          job_name=$(jq -r .name "$job")
+          if [ -n "$job_log" ]; then
+            step_info=$(mktemp)
+            jq -r '[.steps[] | select(.status=="pending") // empty]' "$job" > "$step_info" 2>/dev/null
+            if [ -s "$step_info" ]; then
+              step_name=$(jq -r '.[0].name // empty' "$step_info")
+            else
+              step_name='check-spelling'
+              jq -r '[.steps[] | select(.status=="queued" and .name=="'"$step_name"'")]' "$job" > "$step_info" 2>/dev/null
+            fi
+            step_number=$(jq -r .[0].number "$step_info")
+          fi
+        fi
+      fi
+    fi
+  fi
+  if [ -n "$step_number" ] && [ -n "$job_log" ] && [ -n "$step_number" ] && [ -n "$step_name" ]; then
+    echo "$job_log"
+    echo "$job_name"
+    echo "$step_number"
+    echo "$step_name"
+  fi
+}
+
+get_action_log() {
+  if [ -z "$GITHUB_SERVER_URL" ]; then
+    return
+  fi
+  if [ -z "$action_log" ]; then
+    if [ -s "$action_log_ref" ]; then
+      action_log="$(cat "$action_log_ref")"
+    else
+      action_log="$(get_action_log_overview)"
+
+      job_info_and_step_info="$(get_job_info_and_step_info)"
+      if [ $(echo "$job_info_and_step_info" | line_count) -eq 4 ]; then
+        job_log=$(echo "$job_info_and_step_info" | head -1)
+        job_name=$(echo "$job_info_and_step_info" | head -2 | tail -1)
+        step_number=$(echo "$job_info_and_step_info" | head -3 | tail -1)
+        step_name=$(echo "$job_info_and_step_info" | head -4 | tail -1)
+        if [ -n "$job_log" ] && [ -n "$step_number" ] && [ -n "$job_name" ]; then
+          action_log="$job_log#step:$step_number:1"
+          echo "$job_name/${step_number}_${step_name}.txt" > "$action_log_file_name"
+        fi
+      fi
+      echo "$action_log" > "$action_log_ref"
+      if [ -n "$job_log" ]; then
+        echo "${job_log##*/}" > "$job_id_ref"
+      fi
+    fi
+  fi
+  echo "$action_log"
+}
+
+repo_clone_note() {
+  echo "
+        ... in a clone of the [$remote_url_ssh]($remote_url_https) repository
+        ${remote_ref:+"on the $b$remote_ref$b branch"} ([ℹ️ how do I use this?](
+        https://docs.check-spelling.dev/Accepting-Suggestions)):
+  "
+}
+
+spelling_warning() {
+  OUTPUT="## 🔴 $1
+"
+  spelling_body "$2" "$3" "$4"
+  if [ -n "$OUTPUT" ]; then
+    post_summary
+  fi
+  prepare_and_post_commit_comment
+}
+spelling_info() {
+  if [ -z "$2" ]; then
+    out="$1"
+  else
+    out="$1
+
+$2"
+  fi
+  spelling_body "$out" "" "$3"
+  if [ -n "$OUTPUT" ]; then
+    post_summary
+  fi
+  if [ -n "$VERBOSE" ]; then
+    prepare_and_post_commit_comment
+  else
+    echo "$OUTPUT"
+  fi
+}
+
+spelling_body() {
+  message="$1"
+  extra="$2"
+  err="$3"
+  action_log_url="$(get_action_log)"
+  if [ -n "$action_log_url" ]; then
+    action_log_markdown="the [📜action log]($action_log_url)"
+  else
+    action_log_markdown=""
+  fi
+  if [ -e "$job_id_ref" ]; then
+    memo="[📝 job summary]($jobs_summary_link#summary-$(cat "$job_id_ref" 2>/dev/null))"
+  else
+    memo='📝 job summary'
+  fi
+  if to_boolean "$INPUT_USE_SARIF"; then
+    pr_number=$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")
+    if [ -n "$pr_number" ]; then
+      sarif_report_query="pr:$pr_number"
+    else
+      sarif_report_query="branch:${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+    fi
+    sarif_report="[👼 SARIF report]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/security/code-scanning?query=is:open+tool:check-spelling+$sarif_report_query),"
+    # check-spelling here corresponds to the uses github/codeql-action/upload-sarif / with / category
+    code_scanning_results_run=$(
+      github_codeql_app_id=57789
+      GH_TOKEN="$GITHUB_TOKEN" gh api "/repos/$GITHUB_REPOSITORY/commits/${GITHUB_HEAD_SHA:-$GITHUB_SHA}/check-runs" \
+        -q ".check_runs|map(select(.app.id==$github_codeql_app_id and .name==${Q}check-spelling${Q}))[0].url // empty" ||
+      true
+    )
+    if [ -n "$code_scanning_results_run" ]; then
+      code_scanning_results_url=$(GH_TOKEN="$GITHUB_TOKEN" gh api "$code_scanning_results_run" -q '.html_url // empty' || true)
+      if [ -n "$code_scanning_results_url" ]; then
+        sarif_report="$sarif_report [🚨 alerts]($code_scanning_results_url),"
+      fi
+    fi
+  fi
+
+  case "$GITHUB_EVENT_NAME" in
+    pull_request|pull_request_target)
+      details_note="See the [📂 files]($(jq -r .pull_request.html_url "$GITHUB_EVENT_PATH")/files/) view, $action_log_markdown, $sarif_report or $memo for details.";;
+    push)
+      if [ -n "$action_log_markdown" ]; then
+        details_note="See $action_log_markdown${sarif_report:+", $sarif_report"} or $memo for details."
+      else
+        details_note=""
+      fi
+      ;;
+    *)
+      details_note=$(echo "<!-- If you can see this, please [file a bug](https://github.com/$GH_ACTION_REPOSITORY/issues/new)
+        referencing this comment url, as the code does not expect this to happen. -->" | strip_lead);;
+  esac
+  if [ -z "$err" ] && [ -e "$fewer_misspellings_canary" ]; then
+    output_remove_items="$N$(remove_items)"
+  fi
+  if [ -n "$err" ] && [ -e "$fewer_misspellings_canary" ]; then
+    cleanup_text="remove the previously acknowledged and now absent words"
+  fi
+  if [ -n "$GITHUB_HEAD_REF" ]; then
+    remote_url_ssh="$(jq -r '.pull_request.head.repo.ssh_url // empty' "$GITHUB_EVENT_PATH")"
+    remote_url_https="$(jq -r '.pull_request.head.repo.clone_url // empty' "$GITHUB_EVENT_PATH")"
+    if should_patch_head; then
+      remote_ref="$GITHUB_HEAD_REF"
+    else
+      remote_ref="$GITHUB_BASE_REF"
+    fi
+  else
+    remote_url_ssh="$(jq -r '.repository.ssh_url // empty' "$GITHUB_EVENT_PATH")"
+    remote_url_https="$(jq -r '.repository.clone_url // empty' "$GITHUB_EVENT_PATH")"
+    remote_ref="$GITHUB_REF"
+  fi
+  if [ -z "$remote_url_ssh$remote_url_https" ]; then
+    remote_url_ssh="$(git remote get-url --push origin 2>/dev/null || true)"
+    if [ -z "$remote_url_ssh" ]; then
+      remote_url_https="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+    fi
+  fi
+  if [ -z "$remote_url_https" ]; then
+    remote_url_https="$(echo "$remote_url_ssh" | perl -pe 's{(?:git\@|^)github\.com:}{https://github.com/}')"
+  fi
+  if [ -z "$remote_ref" ] && [ -e .git/HEAD ]; then
+    remote_ref="$(perl -pe 's{^ref: }{}' .git/HEAD)"
+  fi
+  remote_ref=${remote_ref#refs/heads/}
+  if [ -s "$extra_dictionaries_cover_entries" ]; then
+    expected_item_count="$(line_count < "$expect_path")"
+    if [ $expected_item_count -gt 0 ]; then
+      if [ $unknown_count -gt 0 ]; then
+        expect_details_unknown="and **unrecognized words** ($unknown_count)"
+      fi
+      expect_details="This includes both **expected items** ($expected_item_count) from $(cat "$expect_files" | tr '\0\n' '  ')$expect_details_unknown
+      "
+      expect_head=" (expected and unrecognized)"
+    fi
+
+    extra_dictionaries_cover_entries_limited="$(mktemp)"
+    head -"$extra_dictionary_limit" "$extra_dictionaries_cover_entries" > "$extra_dictionaries_cover_entries_limited"
+    if [ -n "$INPUT_LOAD_CONFIG_FROM" ]; then
+      config_json_hint=" (in the $b$INPUT_CONFIG/config.json$b file)"
+    fi
+    if [ -n "$workflow_path" ]; then
+      workflow_path_hint=" (in $b$workflow_path$b)"
+    fi
+    if echo "$INPUT_LOAD_CONFIG_FROM" | grep -q "['"'"]extra[-_]dictionaries'; then
+      add_extra_dictionaries_hint=" adding to the ${b}extra_dictionaries${b} array$config_json_hint:$n$B json$n$(
+        perl -pe 's/\s.*//;s{\[(.*)\]\(.*}{    "$1",}' "$extra_dictionaries_cover_entries_limited"
+      )$N$B"
+    else
+      if [ -n "$THIS_GITHUB_JOB_ID" ]; then
+        job_id_hint=" in ${b}jobs:${b}/${b}$THIS_GITHUB_JOB_ID:${b}"
+      fi
+      action_ref=$(get_action_repo_info)
+      if [ -n "$action_ref" ]; then
+        action_ref_hint=" for ${b}uses: ${action_ref}${b}"
+        inline_with_hint=" in its ${b}with${b}"
+      fi
+      if [ -z "$workflow_path" ]; then
+        creating_a_workflow_and=' creating a workflow (e.g. from https://github.com/check-spelling/spell-check-this/blob/main/.github/workflows/spelling.yml (`https://raw.githubusercontent.com/check-spelling/spell-check-this/main/.github/workflows/spelling.yml`)) and'
+      fi
+      if [ -n "$INPUT_EXTRA_DICTIONARIES" ]; then
+        extra_dictionaries_hint=' to `extra_dictionaries`'
+      else
+        with_hint='
+              with:
+                extra_dictionaries: |'
+      fi
+      if [ "$GITHUB_EVENT_NAME" = pull_request_target ]; then
+        warn_about_pull_request_target="ℹ️ Because this workflow is running ${b}on: pull_request_target${b}, **changes to this workflow file will not take effect** as part of a pull request (including this one). You should:${n}1. Create a new branch.${n}1. Add dictionaries to the workflow file ${workflow_path:+" ($b$workflow_path$b)"} on that branch.${n}1. Test them by pushing that branch.${n}1. Do not remove entries from ${b}expect${b} files on that branch because the workflow changes that will eventually provide the dictionary coverage won't be applicable to the workflow in the corresponding pull request (they are only available after they're merged to the branch).${n}1. Once that branch is merged, you can remove the entries that are no longer needed in another branch.$N---$N"
+      fi
+      add_extra_dictionaries_hint="$creating_a_workflow_and adding them$workflow_path_hint$job_id_hint$action_ref_hint$inline_with_hint$extra_dictionaries_hint:
+      $B yml$with_hint$n$(
+        perl -pe 's/\s.*//;s/^/                  /;s{\[(.*)\]\(.*}{$1}' "$extra_dictionaries_cover_entries_limited"
+      )
+      $B
+      ${warn_about_pull_request_target:+"$warn_about_pull_request_target"}
+      "
+    fi
+    if echo "$INPUT_LOAD_CONFIG_FROM" | grep -q 'check[-_]extra[-_]dictionaries'; then
+      stop_checking_dictionaries_hint="put$config_json_hint:
+      $B json
+      ${Q}check_extra_dictionaries$Q: []
+      $B"
+    else
+      stop_checking_dictionaries_hint="add$workflow_path_hint$action_ref_hint$inline_with_hint:
+      $B yml
+      check_extra_dictionaries: $Q$Q
+      $B"
+    fi
+    output_dictionaries="$(echo "
+      <details><summary>Available 📚 dictionaries could cover words$expect_head not in the 📘 dictionary</summary>
+
+      $expect_details
+
+      Dictionary | Entries | Covers | Uniquely
+      -|-|-|-
+      $(perl -pe 's/ \((\d+)\) covers (\d+) of them \((\d+) uniquely\)/|$1|$2|$3|/ || s/ \((\d+)\) covers (\d+) of them/|$1|$2||/' "$extra_dictionaries_cover_entries_limited")
+
+      Consider$add_extra_dictionaries_hint
+      To stop checking additional dictionaries, $stop_checking_dictionaries_hint
+
+      </details>
+
+      " | strip_leading 6)"
+  fi
+  if [ -s "$should_exclude_file" ]; then
+    calculate_exclude_patterns
+    set_output_variable skipped_files "$should_exclude_file"
+    if ! grep -qE '\w' "$should_exclude_patterns"; then
+      echo '::error title=Excludes generation failed::Please file a bug (excludes-generation-failed)' >&2
+    else
+      set_output_variable should_exclude_patterns "$should_exclude_patterns"
+      exclude_files_text="update file exclusions"
+      output_excludes="$(echo "
+        <details><summary>Some files were automatically ignored 🙈</summary>
+
+        These sample patterns would exclude them:
+        $B
+        $(cat "$should_exclude_patterns")
+        $B"| strip_lead)"
+      if [ $(line_count < "$should_exclude_file") -gt 10 ]; then
+        output_excludes_large="$(echo "
+          "'You should consider excluding directory paths (e.g. `(?:^|/)vendor/`), filenames (e.g. `(?:^|/)yarn\.lock$`), or file extensions (e.g. `\.gz$`)
+          '| strip_lead)"
+      fi
+      output_excludes_suffix="$(echo "
+
+        You should consider adding them to:
+        $B$n" | strip_lead
+
+        )$n$(cat "$excludes_files" |
+        xargs -0 -n1)$n$B$(echo '
+
+        File matching is via Perl regular expressions.
+
+        To check these files, more of their words need to be in the dictionary than not. You can use `patterns.txt` to exclude portions, add items to the dictionary (e.g. by adding them to `allow.txt`), or fix typos.
+        </details>
+      ' | strip_lead)"
+      can_offer_to_apply=1
+    fi
+  fi
+  if [ -s "$counter_summary_file" ]; then
+    get_has_errors
+    if [ -n "$has_notices" ]; then
+      event_title_notices='Notices'
+      event_icon='ℹ️'
+    else
+      event_title_notices=''
+    fi
+    if [ -n "$has_warnings" ]; then
+      event_title_warnings='Warnings'
+      event_icon='⚠️'
+    else
+      event_title_warnings=''
+    fi
+    if [ -n "$has_errors" ]; then
+      event_title_errors='Errors'
+      event_icon='❌'
+    else
+      event_title_errors=''
+    fi
+    event_title=$(build-english-list "$event_title_errors" "$event_title_warnings" "$event_title_notices")
+    if [ -z "$event_title" ]; then
+      event_title=Events
+    fi
+    if [ -s "$counter_summary_file" ]; then
+      warnings_details="$(echo "
+        [$event_icon ${event_title}](https://docs.check-spelling.dev/Event-descriptions) | Count
+        -|-
+        $(
+          jq -r 'to_entries[] | "[ℹ️ \(.key)](https://docs.check-spelling.dev/Event-descriptions#\(.key)) | \(.value)"' "$counter_summary_file" |
+          NOTICES_LIST="$(
+            echo "$INPUT_NOTICES" | events_to_regular_expression
+          )" WARNINGS_LIST="$(
+            echo "$INPUT_WARNINGS" | events_to_regular_expression
+          )" perl -e '
+          my $notices=$ENV{NOTICES_LIST};
+          my $warnings=$ENV{WARNINGS_LIST};
+          while (<>) {
+            if (/$warnings/) {
+              s/ℹ️/⚠️/;
+            } elsif (!/$notices/) {
+              s/ℹ️/❌/;
+            }
+            print;
+          }
+          '
+        )
+
+        See [$event_icon Event descriptions](https://docs.check-spelling.dev/Event-descriptions) for more information.
+        " | strip_lead)"
+    else
+      warnings_details="_Could not get warning list from ${counter_summary_file}_"
+    fi
+    if [ -n "$has_errors" ] && [ -z "$message" ]; then
+      message="$warnings_details"
+    else
+      if [ -n "$details_note" ]; then
+        details_heading="#### $details_note"
+      else
+        details_heading=""
+      fi
+      output_warnings="$(echo "
+      <details><summary>$event_title $event_icon ($(grep -c ':' "$counter_summary_file"))</summary>
+
+      $details_heading
+
+      $warnings_details
+      </details>
+      " | strip_lead)"
+    fi
+  fi
+  count_patterns() {
+    perl -ne 'next '"$2"';next unless /\S/;print' "$1" | line_count
+  }
+  maybe_wrap_in_details() {
+    section_heading="$1"
+    file="$2"
+    item_count_rule="$3"
+    hints="$4"
+    suffix="${5:+$n$5$n}"
+    item_count=$(count_patterns "$file" "$item_count_rule")
+    if [ $item_count -le 3 ]; then
+      section_head="#### $section_heading ($item_count)"
+      section_foot="$n"
+    else
+      section_head="<details><summary>$section_heading ($item_count)</summary>"
+      section_foot="$n</details>$n"
+    fi
+    echo "
+      $section_head
+
+      $hints
+
+      $(
+      cat "$file"
+      )
+
+      $suffix$section_foot
+    " | strip_lead
+  }
+  unrecognized_support_items=$(
+    build-english-list $(
+      jq -r 'keys|.[]' "$counter_summary_file" |
+      perl -ne 'next unless s/^unrecognized-spelling-//; print' |
+      xargs
+    ) |
+    perl -pe 's/commit-message/commit message(s)/; s/pr-title/the pull request title/; s/pr-description/the pull request description/;'
+  )
+  if [ -n "$unrecognized_support_items" ]; then
+    tokens="$tokens_file" warnings="$warning_output" perl -e '
+      my %words;
+      open my $warnings, "<:encoding(UTF-8)", $ENV{warnings};
+      while (<$warnings>) {
+        next unless /- `(.*)` .*\(unrecognized-spelling-[-\w]+\)$/;
+        $words{$1} = 1;
+      }
+      close $warnings;
+      open my $tokens, "<:encoding(UTF-8)", $ENV{tokens};
+      while (<$tokens>) {
+        chomp;
+        delete $words{$_}
+      }
+      close $tokens;
+      for my $token (sort keys %words) {
+        print "- $token\n";
+      }
+    ' > "$add_to_allow"
+    if [ -s "$add_to_allow" ]; then
+      output_unrecognized_support="$(maybe_wrap_in_details "Additional unrecognized items" "$add_to_allow" 'unless /- /' "
+      Items were found in $unrecognized_support_items.
+      " '
+      For the specific items, see Details 🔎 in the 📝 job summary. If they are acceptable, you will need to add them to `allow.txt` or mask them with `patterns.txt`.
+      ')"
+    fi
+  fi
+  if [ -s "$forbidden_summary" ]; then
+    output_forbidden_patterns="$(maybe_wrap_in_details "Forbidden patterns 🙅" "$forbidden_summary" "unless /^##### /" "In order to address this, you could change the content to not match the forbidden patterns (comments before forbidden patterns may help explain why they're forbidden), add patterns for acceptable instances, or adjust the forbidden patterns themselves.
+
+      These forbidden patterns matched content:" "")"
+  fi
+  if [ -s "$candidate_summary" ]; then
+    output_candidate_pattern_suggestions="$(maybe_wrap_in_details "Pattern suggestions ✂️" "$candidate_summary" "if /^#/" "
+      You could add these patterns to $b$new_patterns_file$b:
+      $B
+      # Automatically suggested patterns" "$B
+
+      Alternatively, if a pattern suggestion doesn't make sense for this project, add a ${b}#${b} to the beginning of the line in the candidates file with the pattern to stop suggesting it.
+      ")"
+  fi
+  if [ -n "$patch_add" ]; then
+    can_offer_to_apply=1
+    accept_words_text='accept these unrecognized words as correct'
+  fi
+  if [ -n "$GH_ACTION_REF" ] && [ -n "$can_offer_to_apply" ] && [ -n "$err" ]; then
+    if [ -n "$accept_words_text" ]; then
+      if [ "$INPUT_INCLUDE_ADVICE" = 'unrecognized-spelling' ]; then
+        include_advice=true
+      fi
+    fi
+    accept_heading="To $(build-english-list "$add_spell_check_this_text" "$accept_words_text" "$exclude_files_text" "$cleanup_text")"
+    merge_instructions="$(generate_merge_instructions "" " &&")"
+    output_accept_script="$(echo "
+      <details><summary>$accept_heading,
+      you could run the following commands</summary>
+      $(repo_clone_note)
+      $(relative_note)
+
+      $B sh
+      $merge_instructions${merge_instructions:+" &&$n"}$err &&$n git commit -m 'Update check-spelling metadata'
+      $B
+      </details>
+      " | strip_lead)"
+    if [ "$INPUT_INCLUDE_ADVICE" = 'metadata' ]; then
+      include_advice=true
+    fi
+    if offer_quote_reply; then
+      output_quote_reply_placeholder="$n<!--QUOTE_REPLY-->$n"
+    fi
+  fi
+  if [ "$INPUT_INCLUDE_ADVICE" = 'always' ] || [ -n "$has_errors" ]; then
+    include_advice=true
+  fi
+  if [ -n "$include_advice" ] && [ -s "$advice_path" ]; then
+    output_advice="$N$(cat "$advice_path")$n"
+  fi
+  if [ -n "$details_note" ]; then
+    details_heading="### $details_note"
+  else
+    details_heading=""
+  fi
+  step_summary_warnings="$(flush_step_summary_warnings)"
+  OUTPUT=$(echo "$n$report_header$n$step_summary_warnings$n$OUTPUT$details_heading$N$message$extra$output_remove_items$output_excludes$output_excludes_large$output_excludes_suffix$output_accept_script$output_quote_reply_placeholder$output_dictionaries$output_unrecognized_support$output_forbidden_patterns$output_candidate_pattern_suggestions$output_warnings$output_advice
+    " | perl -pe 's/^\s+$/\n/;'| uniq)
+}
+
+flush_step_summary_warnings() {
+  if [ -s "$delay_step_summary_warnings" ]; then
+    echo
+    cat "$delay_step_summary_warnings"
+    echo
+    echo
+    truncate -s 0 "$delay_step_summary_warnings"
+  fi
+}
+
+quit() {
+  flush_step_summary_warnings >> "$GITHUB_STEP_SUMMARY"
+  echo "::remove-matcher owner=check-spelling::"
+  echo "::remove-matcher owner=check-spelling-https::"
+  status="$1"
+  if { [ ${status:-0} -eq 0 ] ; } && [ -n "$has_errors" ]; then
+    status=1
+  fi
+  case "$status" in
+    0) followup='';;
+    1) followup='comment';;
+    2) followup='debug';;
+    3) followup='collapse_previous_comment';;
+  esac
+  echo "result_code=$status" >> "$GITHUB_OUTPUT"
+  echo "followup=$followup" >> "$GITHUB_OUTPUT"
+  echo "$followup" > "$data_dir/followup"
+  echo "result_code=$status" >> "$GITHUB_ENV"
+  if [ -e /proc/self/cgroup ]; then
+    echo "docker_container=$(perl -ne 'next unless m{:/docker/(.*)}; print $1;last' /proc/self/cgroup)" >> "$GITHUB_OUTPUT"
+  fi
+  set_output_variable workflow-path "$workflow_path"
+  cat "$output_variables" >> "$GITHUB_OUTPUT"
+  if [ -n "$GH_OUTPUT_STUB" ]; then
+    perl -pe 's/^(\S+)=(.*)/::set-output name=$1::$2/' "$GITHUB_OUTPUT"
+  fi
+  if ls "$data_dir" 2> /dev/null | grep -q .; then
+    artifact="$(mktemp)"
+    (
+      cd "$data_dir"
+      zip -q "$artifact.zip" ./*
+      if [ -n "$ACT" ]; then
+        if to_boolean "$INPUT_POST_COMMENT"; then
+          encode_artifact "$artifact.zip"
+        else
+          echo "::warning ::input_post_comment is suppressed -- if you're looking for the complete comment archive, you probably should disable that suppression."
+        fi
+      fi
+      rm ./*
+      if [ -n "$INPUT_REPORT_TITLE_SUFFIX" ]; then
+        build_artifact_suffix
+      fi
+      mv "$artifact.zip" "artifact$artifact_suffix.zip"
+    )
+  fi
+  if to_boolean "$quit_without_error"; then
+    exit
+  fi
+  exit ${status:+"$status"}
+}
+
+body_to_payload() {
+  PAYLOAD="$(mktemp)"
+  wrap_file_in_json 'body' "$BODY" > "$PAYLOAD"
+  if to_boolean "$DEBUG"; then
+    cat "$PAYLOAD" >&2
+  fi
+}
+
+collaborator() {
+  collaborator_url="$1"
+  call_curl \
+    "$collaborator_url" \
+    -H "Accept: application/vnd.github.v3+json" \
+    2> /dev/null
+}
+
+pull_request() {
+  pull_request_url="$1"
+  call_curl \
+    "$pull_request_url" \
+    -S \
+    -H "Content-Type: application/json"
+}
+
+react() {
+  url="$1"
+  reaction="$2"
+  call_curl \
+    "$url"/reactions \
+    -S \
+    -X POST \
+    -H "Accept: application/vnd.github.squirrel-girl-preview+json" \
+    -d '{"content":"'"$reaction"'"}'
+}
+
+unlock_pr() {
+  pr_locked="$(jq -r .pull_request.locked "$GITHUB_EVENT_PATH")"
+  if to_boolean "$pr_locked"; then
+    locked_pull_url="$(jq -r .pull_request._links.issue.href "$GITHUB_EVENT_PATH")"/lock
+    call_curl \
+      "$locked_pull_url" \
+      -S \
+      -X DELETE \
+      -H "Accept: application/vnd.github.v3+json"
+  fi
+}
+
+lock_pr() {
+  if to_boolean "$pr_locked"; then
+    lock_reason="$(jq -r '.pull_request.active_lock_reason // ""' "$GITHUB_EVENT_PATH")"
+    if [ -n "$lock_reason" ]; then
+      lock_method=-d
+      lock_data='{"lock_reason":"'"$lock_reason"'"}'
+    else
+      lock_method=-H
+      lock_data='Content-Length: 0'
+    fi
+    call_curl \
+      "$locked_pull_url" \
+      -S \
+      -X PUT \
+      -H "Accept: application/vnd.github.v3+json" \
+      "$lock_method" "$lock_data"
+  fi
+}
+
+comment() {
+  comments_url=$(echo "$1" | comment_api_url)
+  comments_url="${comments_url:-"$1"}"
+  payload="$2"
+  if [ -n "$payload" ]; then
+    method="$3"
+  fi
+  call_curl \
+    "$comments_url" \
+    -S \
+    ${method:+-X "$method"} \
+    -H "Content-Type: application/json" \
+    -H 'Accept: application/vnd.github.comfort-fade-preview+json' \
+    ${payload:+--data "@$payload"}
+}
+
+track_comment() {
+  HTML_COMMENT_URL="$(jq -r '.html_url // empty' "$response")"
+  echo "Comment posted to ${HTML_COMMENT_URL:-"$COMMENT_URL"}"
+  comment_author_id="$(jq -r '.user.id // empty' "$response")"
+  posted_comment_node_id="$(jq -r '.node_id // empty' "$response")"
+}
+
+comment_url_to_html_url() {
+  comment "$1" | jq -r ".html_url // $Q$1$Q"
+}
+
+set_comments_url() {
+  event="$1"
+  file="$2"
+  sha="$3"
+  case "$event" in
+    issue_comment)
+      COMMENTS_URL="$(jq -r '.issue.comments_url // empty' "$file")";;
+    pull_request|pull_request_target|pull_request_review_comment)
+      COMMENTS_URL="$(jq -r '.pull_request.comments_url // empty' "$file")";;
+    push|commit_comment)
+      COMMENTS_URL="$(jq -r '.repository.commits_url // empty' "$file" | perl -pe 's#\{/sha}#/'"$sha"'/comments#')";;
+  esac
+}
+
+trim_commit_comment() {
+  stripped="$(mktemp)"
+  (perl -p -i.raw -e '$/=undef; s{'"$2"'}{$1'"$3"'_Truncated, please see the job summary, log, or artifact if available._\n}s; my $capture=$2; $capture=~s/((?:\S+\s+){14})(\S+)\s+/$1$2\n/g;my $overview=q<'"$(get_action_log_overview)"'>; s{\n(See the) (\[action log\])}{\n$1 [overview]($overview) or $2}s unless m{\Q$overview\E}; print STDERR "$capture\n"' "$BODY") 2> "$stripped"
+  body_to_payload
+  previous_payload_size="$payload_size"
+  payload_size="$("$file_size" "$PAYLOAD")"
+  if [ $payload_size -lt $previous_payload_size ]; then
+    echo "::warning title=Comment Payload::Trimming '$1' ($previous_payload_size=>$payload_size) to get comment payload under GitHub size limit ($github_comment_size_limit)"
+    cat "$stripped"
+    rm "$stripped"
+  elif ! diff -q "$BODY.raw" "$BODY" > /dev/null; then
+    echo "Trimming $1 did not reduce the payload size ($previous_payload_size => $payload_size)"
+    cp "$BODY.raw" "$BODY"
+    payload_size="$previous_payload_size"
+  fi
+}
+
+minimize_comment_body() {
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  trim_commit_comment 'Script' '(<details><summary>)To accept.* these unrecognized.*?</summary>().*?(?=</details>\n)' 'Script unavailable</summary>\n\n'
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  trim_commit_comment 'Stale words' '(<details><summary>These words are not needed and should be removed.*?</summary>)(.*?)(?=</details>)' '\n\n'
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  trim_commit_comment 'Available dictionaries' '(<details><summary>Available dictionaries.*?</summary>\n*)(.*?)(?=</details>)' ''
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  trim_commit_comment 'Unrecognized words' '(<details><summary>Unrecognized words.*?</summary>\n*)\`\`\`(.*?)\`\`\`'
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  trim_commit_comment 'Files' '(<details><summary>Some files were automatically ignored.*</summary>)\n.*?\`\`\`(.*?)\`\`\`.*?(?=</details>)' '\n\n'
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  trim_commit_comment 'Additional unrecognized items' '<details><summary>Additional unrecognized items.*</summary>)\n\nItems were found in .*\n\n.*?(?<=</details>)' '\n\'
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  trim_commit_comment '' '(\nSee the [^\n]*\n)(.*)$' '\n\n'
+  if [ $payload_size -le $github_comment_size_limit ]; then
+    return
+  fi
+  cat "$BODY"
+  body_to_payload
+  echo "::warning title=Comment Payload::Truncated comment payload ($payload_size) is likely to exceed GitHub size limit ($github_comment_size_limit)"
+}
+
+update_would_change_things() {
+  { [ -n "$INPUT_SPELL_CHECK_THIS" ] && [ ! -d "$bucket/$project/" ] ; } ||
+  [ -n "$patch_add" ] ||
+  [ -n "$patch_remove" ] ||
+  [ -s "$should_exclude_file" ]
+}
+
+add_talk_to_bot_message() {
+  if offer_quote_reply && update_would_change_things; then
+    quote_reply_insertion="$(mktemp)"
+    (
+      if [ -n "$INPUT_REPORT_TITLE_SUFFIX" ]; then
+        apply_changes_suffix=" $INPUT_REPORT_TITLE_SUFFIX"
+        jobs_summary_link_suffix="#$INPUT_REPORT_TITLE_SUFFIX"
+      fi
+      echo
+      echo "**OR**"
+      echo
+      echo "To have the bot accept them for you, comment in the PR quoting the following line:"
+      echo "@check-spelling-bot apply [updates]($jobs_summary_link$jobs_summary_link_suffix)$apply_changes_suffix."
+    )> "$quote_reply_insertion"
+    perl -e '$/=undef; my ($insertion, $body) = @ARGV; open INSERTION, "<", $insertion; my $text = <INSERTION>; close INSERTION; open BODY, "<", $body; my $content=<BODY>; close BODY; $content =~ s/<!--QUOTE_REPLY-->/$text/; open BODY, ">", $body; print BODY $content; close BODY;' "$quote_reply_insertion" "$1"
+  fi
+}
+
+escape_git_branch() {
+  echo "$1" | perl -pe "s/'/$q$Q$q$Q$q/g"
+}
+
+generate_merge_instructions() {
+  text_before="$1"
+  text_after="$2"
+  if [ -z "$GITHUB_HEAD_REF" ] || [ "$remote_ref" == "$GITHUB_HEAD_REF" ]; then
+    return
+  fi
+  head_prefix=''
+  if ! echo "$remote_ref" | grep -q '^refs/'; then
+    head_prefix=refs/heads/
+  fi
+  echo "${text_before}git fetch '$(git remote get-url origin)' $head_prefix'$(escape_git_branch "$remote_ref")':refs/private/check-spelling-merge-base &&${n}git checkout '$(escape_git_branch "$GITHUB_HEAD_REF")' &&${n}git merge -m 'Merge $(escape_git_branch "$remote_ref")' 'refs/private/check-spelling-merge-base'${text_after}${n}git push . :'refs/private/check-spelling-merge-base'"
+}
+
+generate_sample_commit_help() {
+  if ! git rev-parse HEAD > /dev/null 2> /dev/null; then
+    return
+  fi
+  if [ ! -s "$tokens_file" ]; then
+    return
+  fi
+  git remote set-url --push origin .
+  archive_directory=$(mktemp -d)
+  if [ -s "$tokens_file" ]; then
+    cp "$tokens_file" "$archive_directory/tokens.txt"
+  fi
+  if [ -s "$remove_words" ]; then
+    cp "$remove_words" "$archive_directory/remove_words.txt"
+  fi
+  cp "$data_dir/apply.json" "$archive_directory"
+  apply_archive=$(mktemp).zip
+  (
+    cd "$archive_directory"
+    zip -r "$apply_archive" . >/dev/null 2>/dev/null
+  )
+  if should_patch_head; then
+    remote_ref="$GITHUB_HEAD_REF"
+    if [ -n "$pull_request_url" ]; then
+      remote_sha="$(get_pr_sha_from_url "$pull_request_url")"
+    fi
+    remote_sha="${remote_sha:-$GITHUB_SHA}"
+  else
+    remote_ref="${GITHUB_BASE_REF:-$GITHUB_REF_NAME}"
+    if [ "$GITHUB_EVENT_NAME" = 'pull_request' ] ||
+       [ "$GITHUB_EVENT_NAME" = 'pull_request_target' ]; then
+      remote_sha="$GITHUB_SHA"'~'
+    else
+      remote_sha="$GITHUB_SHA"
+    fi
+  fi
+  git_stashed="$(git stash list|line_count)"
+  git stash --include-untracked >/dev/null 2>/dev/null
+  git_stashed_now="$(git stash list|line_count)"
+  current_branch="$(git rev-parse --abbrev-ref HEAD)"
+  if [ "$current_branch" = "HEAD" ]; then
+    current_branch="$(git rev-parse HEAD)"
+  fi
+  if git branch -f update-check-spelling-metadata "${remote_sha:-HEAD}"; then
+    git checkout update-check-spelling-metadata >/dev/null 2>/dev/null
+  else
+    git checkout -b update-check-spelling-metadata >/dev/null 2>/dev/null
+  fi
+  "$spellchecker/apply.pl" "$apply_archive"
+  sender_login="$(jq -r '.sender.login // "check-spelling-bot"' "$GITHUB_EVENT_PATH")"
+  get_github_user_and_email "$sender_login"
+  git_commit_out=$(mktemp)
+  git_commit_err=$(mktemp)
+  created_at="$(date)" git_commit "check-spelling run ($GITHUB_EVENT_NAME) for ${remote_ref:-HEAD}" > "$git_commit_out" 2> "$git_commit_err" ||
+    git_commit_status=$?
+  if [ -z "$git_commit_status" ]; then
+    git_apply_commit="$(mktemp)"
+    git format-patch HEAD~..HEAD --stat=2000 --stdout > "$git_apply_commit"
+    delim="@@@@$(shasum "$git_apply_commit" |perl -pe 's/\s.*//')--$(date +%s)"
+    echo "<details><summary>To accept these unrecognized words as correct, you could apply this commit</summary>$N$(repo_clone_note | strip_lead)$n${B}sh"
+    generate_merge_instructions "" " &&"
+    echo "git am <<'$delim'"
+    cat "$git_apply_commit"
+    echo "$delim$n$B$N"
+    echo 'And `git push` ...'
+    echo "</details>"
+  else
+    (
+      echo "git commit failed ($git_commit_status)..."
+      cat "$git_commit_err"
+      cat "$git_commit_out"
+      git reset --hard
+    ) >&2
+  fi
+  git checkout "$current_branch" >/dev/null 2>/dev/null
+  if [ "$git_stashed" != "$git_stashed_now" ]; then
+    git stash pop >/dev/null 2>/dev/null
+  fi
+  git branch -D update-check-spelling-metadata >/dev/null 2>/dev/null
+  git remote set-url --delete --push origin .
+}
+
+post_summary() {
+  if [ -z "$GITHUB_STEP_SUMMARY" ]; then
+    echo 'The $GITHUB_STEP_SUMMARY environment variable is unavailable'
+    echo 'This feature is available in:'
+    echo 'github.com - https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions#environment-files'
+    echo 'GitHub Enterprise Server 3.6+ - https://docs.github.com/enterprise-server@3.6/actions/using-workflows/workflow-commands-for-github-actions#environment-files'
+    echo 'GitHub Enterprise Cloud - https://docs.github.com/enterprise-cloud@latest/actions/using-workflows/workflow-commands-for-github-actions#environment-files'
+    echo
+    if [ -n "$ACT" ]; then
+      echo 'For `act` (before v0.2.43), you can pass `--env GITHUB_STEP_SUMMARY=/dev/stdout`, however much of the logic has been reworked to rely on it.'
+    fi
+    return
+  fi
+
+  step_summary_draft=$(mktemp)
+  echo "$OUTPUT" >> "$step_summary_draft"
+  add_talk_to_bot_message "$step_summary_draft"
+  sample_commit="$(mktemp)"
+  generate_sample_commit_help >> "$sample_commit" ||
+    echo 'generate_sample_commit_help failed, please file a bug' >&2
+  if [ -s "$sample_commit" ]; then
+    draft_with_commit="$(mktemp)"
+    base="$step_summary_draft" insert="$sample_commit" "$insert_into_summary" > "$draft_with_commit"
+    cp "$draft_with_commit" "$step_summary_draft"
+  fi
+  if [ -n "$INPUT_SUMMARY_TABLE" ] && [ -s "$warning_output" ]; then
+    begin_group 'Building summary table'
+    summary_table="$(mktemp)"
+    summary_budget=$((1024*1024 - $(char_count < "$step_summary_draft") - 100))
+    summary_budget="$summary_budget" "$summary_tables" "$warning_output" > "$summary_table"
+    if [ $summary_budget -gt "$(char_count < "$summary_table")" ]; then
+      cat "$summary_table" >> "$step_summary_draft"
+    else
+      echo "::warning title=Summary Table skipped::Details too big to include in Step Summary (summary-table-skipped)"
+    fi
+    end_group
+  fi
+  cat "$step_summary_draft" >> "$GITHUB_STEP_SUMMARY"
+}
+
+get_comment_url() {
+  echo "Preparing a comment for $GITHUB_EVENT_NAME"
+  set_comments_url "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" "$GITHUB_SHA"
+}
+
+prepare_and_post_commit_comment() {
+  if [ -z "$OUTPUT" ]; then
+    return
+  fi
+  get_comment_url
+  if [ -n "$COMMENTS_URL" ] && [ -z "${COMMENTS_URL##*:*}" ]; then
+    if [ ! -s "$BODY" ]; then
+      echo "$OUTPUT" > "$BODY"
+      add_talk_to_bot_message "$BODY"
+      body_to_payload
+      payload_size="$("$file_size" "$PAYLOAD")"
+      github_comment_size_limit=65000
+      minimize_comment_body
+    else
+      body_to_payload
+    fi
+
+    if to_boolean "$INPUT_POST_COMMENT"; then
+      post_commit_comment
+      return
+    fi
+    cp "$PAYLOAD" "$data_dir"/drafted-comment.md
+  fi
+  echo "$OUTPUT"
+}
+
+post_commit_comment() {
+  response="$(mktemp_json)"
+
+  res=0
+  unlock_pr
+  keep_headers=1 comment "$COMMENTS_URL" "$PAYLOAD" > "$response" || res=$?
+  lock_pr
+  if [ ${response_code:-400} -ge 400 ] 2> /dev/null; then
+    if ! to_boolean "$DEBUG"; then
+      echo "::error ::Failed to post to $COMMENTS_URL"
+      cat "$PAYLOAD"
+      echo " -- response -- "
+      echo "Response code: $response_code"
+      echo "Headers:"
+      cat "$response_headers"
+      rm -f "$response_headers"
+      echo "Body:"
+      cat "$response"
+      echo " //// "
+      if [ $response_code -eq 403 ]; then
+        if grep -q '#create-a-commit-comment' "$response"; then
+          echo "Consider adding:"
+          echo
+          echo "permissions:"
+          echo "  contents: write"
+        elif grep -q '#create-an-issue-comment' "$response"; then
+          echo "Consider adding:"
+          echo
+          echo "permissions:"
+          echo "  pull-requests: write"
+        fi
+        if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+          echo
+          echo 'Consider switching to `on: pull_request_target`'
+        fi
+      fi
+    fi
+  else
+    if to_boolean "$DEBUG"; then
+      cat "$response"
+    fi
+    track_comment "$response"
+  fi
+}
+
+strip_lines() {
+  tr "\n" " "
+}
+
+minimize_comment_call() {
+  comment_node="$1"
+  echo "
+      minimizeComment(
+      input:
+      {
+        subjectId: ${Q}$comment_node${Q},
+        classifier: ${reason:-RESOLVED}
+      }
+    ){
+      minimizedComment {
+        isMinimized
+      }
+    }
+" | strip_lead | strip_lines
+}
+
+collapse_comment_mutation() {
+  comment_node="$1"
+  query_head="mutation {"
+  query_tail="}"
+  query_body=""
+  i=0
+  while [ -n "$1" ]; do
+    query_body="$query_body q$i: "$(minimize_comment_call "$1")
+    i="$((i+1))"
+    shift
+  done
+  query="$query_head$query_body$query_tail"
+  wrap_in_json 'query' "$query"
+}
+
+collapse_comment() {
+  [ -z "$GITHUB_GRAPHQL_URL" ] && return
+  call_curl \
+  "$GITHUB_GRAPHQL_URL" \
+  -H "Content-Type: application/json" \
+  --data-binary "$(collapse_comment_mutation "$@")"
+}
+
+should_collapse_previous_and_not_comment() {
+  if [ -z "$GITHUB_SERVER_URL" ]; then
+    return
+  fi
+  if [ -z "$COMMENTS_URL" ]; then
+    set_comments_url "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" "$GITHUB_SHA"
+  fi
+  previous_comment_node_id="$(get_previous_comment)"
+  if [ -z "$previous_comment_node_id" ]; then
+    return
+  fi
+
+  get_comment_minimized_status "$previous_comment_node_id"
+  if [ "$(jq '.data.node.isMinimized // empty' "$minimized_info")" == 'true' ]; then
+    return
+  fi
+
+  echo "previous_comment=$previous_comment_node_id" >> "$GITHUB_OUTPUT"
+  echo "$previous_comment_node_id" > "$data_dir/previous_comment.txt"
+  quit_without_error=1
+  quit 3
+}
+
+exit_if_no_unknown_words() {
+  if [ -s "$counter_summary_file" ]; then
+    get_has_errors
+  fi
+  if [ -z "$has_errors" ] && [ ! -s "$run_output" ]; then
+    no_misspellings
+    should_collapse_previous_and_not_comment
+    quit 0
+  fi
+}
+
+grep_v_spellchecker() {
+  grep_v_string "$spellchecker"
+}
+
+grep_v_string() {
+  NEEDLE="$1" perl -ne 'next if m{$ENV{NEEDLE}}; print'
+}
+
+compare_new_output() {
+  begin_group 'Compare expect with new output'
+    sorted_expect="$temp_sandbox/expect.sorted.txt"
+    (sed -e 's/#.*//' "$expect_path" | sort_words_unique) > "$sorted_expect"
+    expect_path="$sorted_expect"
+    sorted_run_output=$(mktemp)
+    cat "$run_output" | sort_words_unique > "$sorted_run_output"
+
+    diff -w -U0 "$expect_path" "$sorted_run_output" |
+      grep_v_spellchecker > "$diff_output"
+  end_group
+}
+
+generate_curl_instructions() {
+  instructions="$(mktemp)"
+  if [ -n "$ACT" ]; then
+    echo '# look for the instructions to extract `artifact.zip` from your log' >> "$instructions"
+    jobs_summary_link=./artifact.zip
+  fi
+  calculate_exclude_patterns
+  if [ -n "$INPUT_REPORT_TITLE_SUFFIX" ]; then
+    jobs_summary_link_suffix="#$INPUT_REPORT_TITLE_SUFFIX"
+  fi
+  if [ -n "$GITHUB_SERVER_URL" ]; then
+    apply_argument="$jobs_summary_link$jobs_summary_link_suffix"
+  else
+    apply_argument="$data_dir/artifact.zip"
+  fi
+  (
+  if [ -z "$GITHUB_ACTIONS" ]; then
+    echo -n "$spellchecker/apply.pl '$apply_argument'"
+  else
+    echo -n "curl -s -S -L 'https://raw.githubusercontent.com/${GH_ACTION_REPOSITORY:-check-spelling/check-spelling}/${GH_ACTION_REF:-main}/apply.pl' |
+  perl - '$apply_argument'"
+  fi
+  ) >> "$instructions"
+  echo "$instructions"
+}
+
+no_misspellings() {
+  begin_group 'No misspellings'
+  expect_count="$(grep . "$expect_path" | line_count)"
+  if [ "$expect_count" = 1 ]; then
+    headline="There is currently _one_ expected item."
+  else
+    if [ "$expect_count" = 0 ]; then
+      expect_count=no
+    fi
+    headline="There are currently $expect_count expected items."
+  fi
+  title="No new misspelled words found"
+  spelling_info "$title" "$headline" ""
+  end_group
+}
+
+set_patch_remove_add() {
+  patch_remove=$(mktemp)
+  perl -ne 'next unless s/^-([^-])/$1/; print' "$diff_output" > "$patch_remove"
+  if [ ! -s "$patch_remove" ]; then
+    patch_remove=
+  fi
+  begin_group 'New output'
+    patch_add=$(mktemp)
+    perl -ne 'next unless s/^\+([^+])/$1/; print' "$diff_output" > "$patch_add"
+    if [ ! -s "$patch_add" ]; then
+      patch_add=
+    fi
+
+    get_has_errors
+    if [ -z "$has_errors" ] && [ -z "$patch_add" ]; then
+      no_misspellings
+      should_collapse_previous_and_not_comment
+      quit 0
+    fi
+  end_group
+}
+
+make_instructions() {
+  instructions="$(generate_curl_instructions)"
+  if [ -n "$instructions" ]; then
+    cat "$instructions"
+    rm "$instructions"
+  fi
+}
+
+maybe_collapse_previous_comment_and_quit() {
+  if [ -n "$comment_author_id" ]; then
+    previous_comment_node_id="$(get_previous_comment)"
+    if [ -n "$previous_comment_node_id" ]; then
+      reason=OUTDATED collapse_comment "$previous_comment_node_id" > /dev/null
+    fi
+  fi
+  quit 1
+}
+
+check_spelling_report() {
+  if [ -s "$extra_dictionaries_json" ]; then
+    "$output_covers" "$extra_dictionaries_json" > "$extra_dictionaries_cover_entries"
+  elif [ -z "$INPUT_TASK" ] || [ "$INPUT_TASK" = 'spelling' ]; then
+    if [ ! -s "$extra_dictionaries_json" ]; then
+      if [ -n "$check_extra_dictionaries_dir" ]; then
+        begin_group 'Check for extra dictionaries'
+        (
+          cd "$check_extra_dictionaries_dir";
+          aliases="$dictionary_alias_pattern" extra_dictionaries="$check_extra_dictionaries" "$dictionary_coverage" "$run_output" |
+          perl -e 'print sort {
+            $a =~ /^(\d+)-(\d+)-(\d+)-(.*)/;
+            my ($a1, $a2, $a3, $a4) = ($1, $2, $3, $4);
+            $b =~ /^(\d+)-(\d+)-(\d+)-(.*)/;
+            my ($b1, $b2, $b3, $b4) = ($1, $2, $3, $4);
+            (($b3 >= 3 || $a3 >= 3) && $b3 <=> $a3) ||
+            $b1 <=> $a1 ||
+            $b3 / $b2 <=> $a3 / $a2 ||
+            $a2 <=> $b2 ||
+            $a4 cmp $b4
+          } <>;
+          ' |
+          perl -pe 's/^\S+ //' > "$extra_dictionaries_cover_entries"
+        )
+        end_group
+      fi
+    fi
+  fi
+  if [ -s "$extra_dictionaries_cover_entries" ]; then
+    cover_log=$(mktemp)
+    perl -pe 's/^.*?\[(\S+)\]\([^)]*\) \((\d+)\).* covers (\d+) of them \((\d+) uniquely\).*/{"$1":[$3, $2, $4]}/ || s/^.*?\[(\S+)\]\([^)]*\) \((\d+)\).* covers (\d+).*/{"$1":[$3, $2]}/' < "$extra_dictionaries_cover_entries" |
+    tee "$cover_log" |
+    jq -s '.' > "$extra_dictionaries_json" ||
+    (
+      echo "jq -s failed collecting extra_dictionaries_cover_entries from:"
+      cat "$cover_log"
+    ) >&2
+    set_output_variable suggested_dictionaries "$extra_dictionaries_json"
+  fi
+
+  instructions=$(
+    make_instructions
+  )
+  if [ -z "$patch_add" ] ||
+    echo unrecognized-spelling | grep -E -q "$(echo "$INPUT_IGNORED,$INPUT_NOTICES,$INPUT_WARNINGS" | events_to_regular_expression)"; then
+    patch_add=''
+    unknown_count=0
+  else
+    cat "$patch_add" > "$tokens_file"
+    unknown_count="$(line_count < "$tokens_file")"
+  fi
+  get_has_errors
+  title='Please review'
+  if [ -n "$patch_add" ]; then
+    begin_group "Unrecognized ($unknown_count)"
+  elif [ -n "$has_errors" ]; then
+    begin_group "Errors ..."
+  elif [ -n "$patch_remove" ]; then
+    begin_group 'Fewer misspellings'
+    title='There are now fewer misspellings than before'
+  fi
+  set_output_variable unknown_words "$tokens_file"
+  if [ $unknown_count -eq 0 ]; then
+    unknown_word_body=''
+  else
+    unrecognized_words_title="Unrecognized words ($unknown_count)"
+    if [ $unknown_count -gt ${INPUT_UNRECOGNIZED_WORDS_BEFORE_COLLAPSING:-10} ]; then
+      unknown_word_body="$n<details><summary>$unrecognized_words_title</summary>
+
+$B
+$(cat "$tokens_file")
+$B
+</details>"
+    else
+      unknown_word_body="$n### $unrecognized_words_title$N$(cat "$tokens_file")"
+    fi
+  fi
+  if [ -n "$has_errors" ] || [ $unknown_count -gt 0 ]; then
+    spelling_warning "$title" "$unknown_word_body" "$N$(remove_items)$n" "$instructions"
+  else
+    quit_without_error=1
+    if [ -n "$INPUT_EXPERIMENTAL_COMMIT_NOTE" ]; then
+      instructions="$(generate_curl_instructions)"
+
+      . "$instructions" &&
+      git_commit "$INPUT_EXPERIMENTAL_COMMIT_NOTE" &&
+      git push origin "${GITHUB_HEAD_REF:-"$GITHUB_REF"}"
+      spelling_info "$title" "" "Applied"
+    else
+      spelling_info "$title" "" "$instructions"
+    fi
+    should_collapse_previous_and_not_comment
+  fi
+  end_group
+  echo "$title"
+  maybe_collapse_previous_comment_and_quit
+}
+
+hash_dictionaries() {
+  exit
+}
+
+if [ "$INPUT_TASK" = hash-dictionaries ]; then
+  hash_dictionaries
+fi
+basic_setup
+set_up_curl
+set_up_tools
+define_variables
+set_up_reporter
+check_inputs
+dispatcher
+set_up_files
+welcome
+run_spell_check
+exit_if_no_unknown_words
+compare_new_output
+fewer_misspellings_canary="$(mktemp)"
+set_patch_remove_add
+check_spelling_report

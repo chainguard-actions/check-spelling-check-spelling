@@ -1,0 +1,146 @@
+name: 'Checkout Stub'
+description: 'Checkout a Git repository at a particular version'
+inputs:
+  repository:
+    description:
+    default: ${{ github.repository }}
+  ref:
+    description:
+  token:
+    description:
+    default: ${{ github.token }}
+  ssh-key:
+    description:
+  ssh-known-hosts:
+    description:
+  ssh-strict:
+    description:
+    default: true
+  ssh-user:
+    description:
+    default: git
+  persist-credentials:
+    description:
+    default: true
+  path:
+    description:
+  clean:
+    description:
+    default: true
+  filter:
+    description:
+    default: null
+  sparse-checkout:
+    description:
+    default: null
+  sparse-checkout-cone-mode:
+    description:
+    default: true
+  fetch-depth:
+    description:
+    default: 1
+  fetch-tags:
+    description:
+    default: false
+  show-progress:
+    description:
+    default: true
+  lfs:
+    description:
+    default: false
+  submodules:
+    description:
+    default: false
+  set-safe-directory:
+    description:
+    default: true
+  github-server-url:
+    description:
+    required: false
+outputs:
+  ref:
+    description:
+    value: ${{ steps.action.outputs.ref }}
+  commit:
+    description:
+    value: ${{ steps.action.outputs.commit }}
+  outcome:
+    description:
+    value: ${{ steps.action.outcome }}
+  error-file:
+    description: Git checkout errors
+    value: ${{ steps.action.outputs.err }}
+  output-file:
+    description: Git checkout output
+    value: ${{ steps.action.outputs.out }}
+runs:
+  using: "composite"
+  steps:
+  - name: Suppress git default branch message
+    id: quiet
+    shell: bash
+    env:
+      ACTION_PATH: ${{ github.action_path }}
+    run: |
+      : Suppress git default branch message
+      "$ACTION_PATH"/git-pre
+  - name: Shim git
+    shell: bash
+    id: shim-git
+    env:
+      repo_path: ${{ inputs.path || github.workspace }}
+    run: |
+      : Shim git
+      if [ ! -e /tmp/.check-spelling-git-logs ]; then
+        mkdir /tmp/.check-spelling-git-logs
+        real_git=$(command -v git)
+        ln -s "$real_git.real" /tmp/.check-spelling-git-logs/git &&
+        sudo mv "$real_git" "$real_git.real" &&
+        sudo ln -s "$GITHUB_ACTION_PATH"/git "$real_git" ||
+        true
+      fi
+      err=$(mktemp)
+      out=$(mktemp)
+      (
+        echo "err=$err"
+        echo "out=$out"
+      ) >> "$GITHUB_OUTPUT"
+  - name: Checkout
+    id: action
+    continue-on-error: true
+    uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+    with:
+      clean: ${{ inputs.clean }}
+      fetch-depth: ${{ inputs.fetch-depth }}
+      fetch-tags: ${{ inputs.fetch-tags }}
+      filter: ${{ inputs.filter }}
+      github-server-url: ${{ inputs.github-server-url }}
+      lfs: ${{ inputs.lfs }}
+      path: ${{ inputs.path }}
+      persist-credentials: ${{ inputs.persist-credentials }}
+      ref: ${{ inputs.ref }}
+      repository: ${{ inputs.repository }}
+      set-safe-directory: ${{ inputs.set-safe-directory }}
+      show-progress: ${{ inputs.show-progress }}
+      sparse-checkout: ${{ inputs.sparse-checkout }}
+      sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
+      ssh-key: ${{ inputs.ssh-key }}
+      ssh-known-hosts: ${{ inputs.ssh-known-hosts }}
+      ssh-strict: ${{ inputs.ssh-strict }}
+      ssh-user: ${{ inputs.ssh-user }}
+      submodules: ${{ inputs.submodules }}
+      token: ${{ inputs.token }}
+    env:
+      GIT_CURL_VERBOSE: True
+      GIT_TRACE: True
+      GIT_SSH_COMMAND: ssh -v -v -v
+      checkout_git_err: ${{ steps.shim-git.outputs.err }}
+      checkout_git_out: ${{ steps.shim-git.outputs.out }}
+  - name: Restore silly message
+    if: steps.quiet.outputs.cleanup
+    shell: bash
+    env:
+      ACTION_PATH: ${{ github.action_path }}
+    run: |
+      : Restore silly git message
+      "$ACTION_PATH"/git-post

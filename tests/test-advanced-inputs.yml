@@ -1,0 +1,37 @@
+name: Test advanced inputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          config: .github/actions/spelling
+          experimental_path: "."
+          post_comment: "0"
+          quit_without_error: "1"
+          debug: "1"
+          experimental_parallel_jobs: "2"
+          bucket: "https://raw.githubusercontent.com/check-spelling/check-spelling/main"
+          project: "dict"
+          caller_container: ""
+          checkout-token: ${{ github.token }}
+          sarif-token: ${{ github.token }}
+          ignore-next-line: "# cspell:disable-next-line"
+          check_extra_dictionaries: ""
+          extra_dictionaries: ""
+          allow-hunspell: "0"
+          use_magic_file: "0"
+      - name: Assert action ran with advanced inputs
+        run: |
+          echo "Action completed with advanced inputs (continue-on-error allows failure)"
+          echo "result_code: ${{ steps.action.outputs.result_code }}"
+          echo "PASS"

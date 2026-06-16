@@ -1,0 +1,147 @@
+::add-matcher::WORKSPACE/reporter.json
+Retrieving expect from WORKSPACE/t/unknown-words.pr/config/expect.txt
+Retrieving excludes from WORKSPACE/t/unknown-words.pr/config/excludes.txt
+::group::Retrieving check extra dictionaries
+::endgroup::
+Retrieving only from WORKSPACE/t/unknown-words.pr/config/only.txt
+Retrieving line_forbidden from WORKSPACE/t/unknown-words.pr/config/line_forbidden.patterns
+Retrieving patterns from WORKSPACE/t/unknown-words.pr/config/patterns.txt
+Checking spelling...
+::group::Spell checking (4) files
+TEMP_DIRECTORY/GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY_NAME/paths-of-checked-files.txt
+unknown-words/input/logo.png
+unknown-words/input/sample.file
+unknown-words/input/test.png
+::endgroup::
+::group::Spell check
+::endgroup::
+::group::Compare expect with new output
+::endgroup::
+::group::New output
+::endgroup::
+::group::Check for extra dictionaries
+::endgroup::
+::group::Unrecognized (16)
+::group::Building summary table
+::endgroup::
+Preparing a comment for push
+
+# @check-spelling-bot Report
+
+## 🔴 Please review
+### See the [📜action log](GITHUB_SERVER_URL/GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY_NAME/actions/runs/GITHUB_RUN_ID) or 📝 job summary for details.
+
+<details><summary>Unrecognized words (16)</summary>
+
+```
+Aiglos
+Alqua
+bugfix
+bugfixes
+continvoucly
+diid
+featue
+fixx
+hotfix
+hotfixes
+ico
+morged
+png
+thiss
+would've
+youu
+```
+</details>
+
+<details><summary>These words are not needed and should be removed
+</summary>unexpectedlylong
+</details><p></p>
+
+<details><summary>Some files were automatically ignored 🙈</summary>
+
+These sample patterns would exclude them:
+```
+^unknown-words/input/logo\.png$
+```
+
+You should consider adding them to:
+```
+WORKSPACE/t/unknown-words.pr/config/excludes.txt
+```
+
+File matching is via Perl regular expressions.
+
+To check these files, more of their words need to be in the dictionary than not. You can use `patterns.txt` to exclude portions, add items to the dictionary (e.g. by adding them to `allow.txt`), or fix typos.
+</details>
+
+<details><summary>To accept these unrecognized words as correct, update file exclusions, and remove the previously acknowledged and now absent words,
+you could run the following commands</summary>
+
+... in a clone of the [GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY_NAME](GITHUB_SERVER_URL/GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY_NAME) repository
+on the `GITHUB_BRANCH` branch ([ℹ️ how do I use this?](
+https://docs.check-spelling.dev/Accepting-Suggestions)):
+
+``` sh
+git fetch 'GITHUB_SERVER_URL/GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY_NAME' refs/heads/'some-base':refs/private/check-spelling-merge-base &&
+git checkout 'some-head' &&
+git merge -m 'Merge some-base' 'refs/private/check-spelling-merge-base' &&
+git push . :'refs/private/check-spelling-merge-base' &&
+WORKSPACE/apply.pl 'GITHUB_SERVER_URL/GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY_NAME/actions/runs/GITHUB_RUN_ID/attempts/' &&
+git commit -m 'Update check-spelling metadata'
+```
+</details>
+
+<details><summary>Available 📚 dictionaries could cover words (expected and unrecognized) not in the 📘 dictionary</summary>
+
+This includes both **expected items** (1) from WORKSPACE/t/unknown-words.pr/config/expect.txt and **unrecognized words** (16)
+
+Dictionary | Entries | Covers | Uniquely
+-|-|-|-
+[extra:elvish.txt](EXTRA_DICTIONARIES_PROTO/elvish.txt)|6|2|2|
+
+Consider creating a workflow (e.g. from GITHUB_SERVER_URL/check-spelling/spell-check-this/blob/main/.github/workflows/spelling.yml (`https://raw.githubusercontent.com/check-spelling/spell-check-this/main/.github/workflows/spelling.yml`)) and adding them:
+``` yml
+        with:
+          extra_dictionaries: |
+            extra:elvish.txt
+```
+
+To stop checking additional dictionaries, add:
+``` yml
+check_extra_dictionaries: ""
+```
+
+</details>
+
+#### Forbidden patterns 🙅 (1)
+
+In order to address this, you could change the content to not match the forbidden patterns (comments before forbidden patterns may help explain why they're forbidden), add patterns for acceptable instances, or adjust the forbidden patterns themselves.
+
+These forbidden patterns matched content:
+
+##### Should be `sample-file.txt`
+```
+\bsample\.file\b
+```
+
+<details><summary>Errors and Warnings ❌ (7)</summary>
+
+#### See the [📜action log](GITHUB_SERVER_URL/GITHUB_REPOSITORY_OWNER/GITHUB_REPOSITORY_NAME/actions/runs/GITHUB_RUN_ID) or 📝 job summary for details.
+
+[❌ Errors and Warnings](https://docs.check-spelling.dev/Event-descriptions) | Count
+-|-
+[⚠️ bad-regex](https://docs.check-spelling.dev/Event-descriptions#bad-regex) | 1
+[⚠️ binary-file](https://docs.check-spelling.dev/Event-descriptions#binary-file) | 1
+[❌ check-file-path](https://docs.check-spelling.dev/Event-descriptions#check-file-path) | 2
+[❌ forbidden-pattern](https://docs.check-spelling.dev/Event-descriptions#forbidden-pattern) | 2
+[⚠️ homoglyph-word](https://docs.check-spelling.dev/Event-descriptions#homoglyph-word) | 1
+[⚠️ ignored-expect-variant](https://docs.check-spelling.dev/Event-descriptions#ignored-expect-variant) | 1
+[⚠️ non-alpha-in-dictionary](https://docs.check-spelling.dev/Event-descriptions#non-alpha-in-dictionary) | 1
+
+See [❌ Event descriptions](https://docs.check-spelling.dev/Event-descriptions) for more information.
+
+</details>
+::endgroup::
+Please review
+::remove-matcher owner=check-spelling::
+::remove-matcher owner=check-spelling-https::
