@@ -1,0 +1,9 @@
+ignore$
+\.aff$
+\.dic$
+\.png$
+\.t$
+^actions/
+^LICENSE\.txt$
+^t/.*/
+^\.github/

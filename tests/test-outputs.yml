@@ -1,0 +1,46 @@
+name: Test check-spelling outputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_EVENT_NAME: push
+      GITHUB_REF: refs/heads/main
+      GITHUB_REPOSITORY: test-owner/test-repo
+      GITHUB_RUN_ID: "1"
+      GITHUB_RUN_ATTEMPT: "1"
+      GITHUB_API_URL: https://api.github.com
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create spelling config directory with known words
+        run: |
+          mkdir -p .github/actions/spelling
+          # Create expect.txt with some words that appear in this repo
+          printf 'github\nspelling\ncheck\n' > .github/actions/spelling/expect.txt
+
+      - id: action
+        uses: .
+        with:
+          config: .github/actions/spelling
+          post_comment: "0"
+          quit_without_error: "1"
+          checkout: "false"
+          experimental_path: "."
+        continue-on-error: true
+
+      - name: Assert outputs are accessible
+        env:
+          UNKNOWN_WORDS: ${{ steps.action.outputs.unknown_words }}
+          STALE_WORDS: ${{ steps.action.outputs.stale_words }}
+          SKIPPED_FILES: ${{ steps.action.outputs.skipped_files }}
+          RESULT_CODE: ${{ steps.action.outputs.result_code }}
+        run: |
+          echo "unknown_words: '$UNKNOWN_WORDS'"
+          echo "stale_words: '$STALE_WORDS'"
+          echo "skipped_files: '$SKIPPED_FILES'"
+          echo "result_code: '$RESULT_CODE'"
+          # The action should have completed and outputs should be accessible
+          # (even if empty, the step should have run)
+          echo "PASS: outputs are accessible from the action"

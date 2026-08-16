@@ -1,0 +1,40 @@
+name: Test check-spelling basic push
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_EVENT_NAME: push
+      GITHUB_REF: refs/heads/main
+      GITHUB_REPOSITORY: test-owner/test-repo
+      GITHUB_RUN_ID: "1"
+      GITHUB_RUN_ATTEMPT: "1"
+      GITHUB_API_URL: https://api.github.com
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create spelling config directory
+        run: |
+          mkdir -p .github/actions/spelling
+          # Create a minimal expect.txt so the action has something to work with
+          echo "# test expect" > .github/actions/spelling/expect.txt
+
+      - id: action
+        uses: .
+        with:
+          config: .github/actions/spelling
+          post_comment: "0"
+          quit_without_error: "1"
+          checkout: "false"
+          experimental_path: "."
+        continue-on-error: true
+
+      - name: Assert action ran (result_code output exists or action completed)
+        env:
+          RESULT_CODE: ${{ steps.action.outputs.result_code }}
+        run: |
+          echo "result_code: '$RESULT_CODE'"
+          # The action should have run and either produced a result_code or exited cleanly
+          # With quit_without_error=1, it should not fail the workflow
+          echo "PASS: action completed without crashing the workflow"

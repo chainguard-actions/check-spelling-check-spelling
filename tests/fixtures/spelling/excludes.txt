@@ -1,0 +1,9 @@
+.*
+*.sh
+*.pl
+*.json
+*.md
+*.txt
+*.yml
+*.yaml
+*.pm

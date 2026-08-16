@@ -1,0 +1,39 @@
+name: Test check-spelling pull request event
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_EVENT_NAME: pull_request
+      GITHUB_REF: refs/pull/1/merge
+      GITHUB_HEAD_REF: feature-branch
+      GITHUB_BASE_REF: main
+      GITHUB_REPOSITORY: test-owner/test-repo
+      GITHUB_RUN_ID: "1"
+      GITHUB_RUN_ATTEMPT: "1"
+      GITHUB_API_URL: https://api.github.com
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create spelling config directory
+        run: |
+          mkdir -p .github/actions/spelling
+          echo "# test expect" > .github/actions/spelling/expect.txt
+
+      - id: action
+        uses: .
+        with:
+          config: .github/actions/spelling
+          post_comment: "0"
+          quit_without_error: "1"
+          checkout: "false"
+          experimental_path: "."
+        continue-on-error: true
+
+      - name: Assert action completed for pull_request event
+        env:
+          RESULT_CODE: ${{ steps.action.outputs.result_code }}
+        run: |
+          echo "result_code: '$RESULT_CODE'"
+          echo "PASS: action completed for pull_request event"

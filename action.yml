@@ -395,12 +395,10 @@ runs:
         ALTERNATE_ENGINE: ${{ inputs.alternate_engine }}
       run: |
         : Set up alternate engine
-        raw_repo=$(printf '%s' "$ALTERNATE_ENGINE" | perl -pe 's/\@.*//')
-        safe_repo=$(printf '%s' "$raw_repo" | tr -d '\n\r')
-        echo "repo=$safe_repo" >> "$GITHUB_OUTPUT"
-        raw_branch=$(printf '%s' "$ALTERNATE_ENGINE" | perl -ne 'next unless s/.*\@//; print')
-        safe_branch=$(printf '%s' "$raw_branch" | tr -d '\n\r')
-        echo "branch=$safe_branch" >> "$GITHUB_OUTPUT"
+        repo=$(printf '%s' "$ALTERNATE_ENGINE" | perl -pe 's/\@.*//' | tr -d '\n\r')
+        branch=$(printf '%s' "$ALTERNATE_ENGINE" | perl -ne 'next unless s/.*\@//; print' | tr -d '\n\r')
+        echo "repo=$repo" >> "$GITHUB_OUTPUT"
+        echo "branch=$branch" >> "$GITHUB_OUTPUT"
     - name: shim
       shell: bash
       run: |
@@ -520,8 +518,9 @@ runs:
         suffix: ${{ inputs.report_title_suffix }}
       run: |
         : Retrieve comment
-        safe_suffix="${suffix//[^a-zA-Z0-9._-]/}"
-        if ! gh run download -R "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" -n "check-spelling-comment-$safe_suffix" 2>/dev/null; then
+        safe_suffix=$(printf '%s' "$suffix" | tr -d '\n\r$()`\\')
+        artifact_name="check-spelling-comment-$safe_suffix"
+        if ! gh run download -R "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" -n "$artifact_name" 2>/dev/null; then
           if ! gh run download -R "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" -n check-spelling-comment 2>/dev/null; then
             gh_api_out=$(mktemp)
             gh_api_err=$(mktemp)

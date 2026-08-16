@@ -1,4 +1,4 @@
-name: Test basic spell check
+name: Test word length configuration inputs
 on:
   workflow_dispatch:
 jobs:
@@ -25,22 +25,18 @@ jobs:
           checkout: 'false'
           experimental_path: .
           event_aliases: '{"workflow_dispatch":"push"}'
+          shortest_word: '4'
+          longest_word: '20'
         continue-on-error: true
-      - name: Assert action ran
+      - name: Assert action ran with word length config
         env:
           OUTCOME: ${{ steps.spelling.outcome }}
+          RESULT_CODE: ${{ steps.spelling.outputs.result_code }}
         run: |
-          echo "spelling step outcome: $OUTCOME"
-          # The action may succeed or fail (due to unknown words or secpoll),
-          # but the step should have run (outcome is not 'skipped')
+          echo "outcome: '$OUTCOME'"
+          echo "result_code: '$RESULT_CODE'"
           if [ "$OUTCOME" = "skipped" ]; then
             echo "FAIL: spelling step was skipped unexpectedly"
             exit 1
           fi
-          echo "PASS: spelling step ran (outcome=$OUTCOME)"
-      - name: Assert result_code output is accessible
-        env:
-          RESULT_CODE: ${{ steps.spelling.outputs.result_code }}
-        run: |
-          echo "result_code: '$RESULT_CODE'"
-          echo "PASS: result_code output is accessible (may be empty if action failed early)"
+          echo "PASS: action accepted shortest_word and longest_word inputs (outcome=$OUTCOME)"

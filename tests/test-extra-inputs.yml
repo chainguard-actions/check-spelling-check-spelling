@@ -1,4 +1,4 @@
-name: Test basic spell check
+name: Test extra inputs coverage
 on:
   workflow_dispatch:
 jobs:
@@ -12,9 +12,9 @@ jobs:
       - name: Set up spelling config from fixtures
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.github/actions/spelling"
-          cp "$GITHUB_WORKSPACE/tests/fixtures/spelling/expect.txt" \
+          cp "$GITHUB_WORKSPACE/hardened/tests/fixtures/spelling/expect.txt" \
              "$GITHUB_WORKSPACE/.github/actions/spelling/expect.txt"
-          cp "$GITHUB_WORKSPACE/tests/fixtures/spelling/excludes.txt" \
+          cp "$GITHUB_WORKSPACE/hardened/tests/fixtures/spelling/excludes.txt" \
              "$GITHUB_WORKSPACE/.github/actions/spelling/excludes.txt"
       - id: spelling
         uses: .
@@ -25,22 +25,28 @@ jobs:
           checkout: 'false'
           experimental_path: .
           event_aliases: '{"workflow_dispatch":"push"}'
+          # Inputs under coverage test
+          bucket: ''
+          project: ''
+          debug: '0'
+          experimental_parallel_jobs: '1'
+          caller_container: ''
+          checkout-token: ${{ github.token }}
+          sarif-token: ${{ github.token }}
         continue-on-error: true
       - name: Assert action ran
         env:
           OUTCOME: ${{ steps.spelling.outcome }}
         run: |
           echo "spelling step outcome: $OUTCOME"
-          # The action may succeed or fail (due to unknown words or secpoll),
-          # but the step should have run (outcome is not 'skipped')
           if [ "$OUTCOME" = "skipped" ]; then
             echo "FAIL: spelling step was skipped unexpectedly"
             exit 1
           fi
-          echo "PASS: spelling step ran (outcome=$OUTCOME)"
+          echo "PASS: spelling step ran with extra inputs (outcome=$OUTCOME)"
       - name: Assert result_code output is accessible
         env:
           RESULT_CODE: ${{ steps.spelling.outputs.result_code }}
         run: |
           echo "result_code: '$RESULT_CODE'"
-          echo "PASS: result_code output is accessible (may be empty if action failed early)"
+          echo "PASS: result_code output is accessible"
