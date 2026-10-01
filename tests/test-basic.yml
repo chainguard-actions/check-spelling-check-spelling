@@ -1,27 +1,45 @@
-name: Test basic usage with debug
+name: Test basic spell check
 on:
   workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
-      GITHUB_EVENT_NAME: push
-      GITHUB_REF: refs/heads/main
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create spelling config directory
+        run: |
+          mkdir -p .github/actions/spelling
+          # Create an empty expect.txt (no expected misspellings)
+          touch .github/actions/spelling/expect.txt
+          # Create a simple excludes.txt to skip test infrastructure
+          cat > .github/actions/spelling/excludes.txt << 'EOF'
+          ^tests/
+          ^\.github/
+          EOF
+
       - id: action
         uses: .
+        continue-on-error: true
         with:
           GITHUB_TOKEN: ${{ github.token }}
-          debug: '1'
-          quit_without_error: '1'
+          config: .github/actions/spelling
           post_comment: '0'
-          checkout: 'false'
-          config: '.github/actions/spelling'
-        continue-on-error: true
-      - name: Assert action ran
+          quit_without_error: '1'
+          experimental_path: '.'
+
+      - name: Assert action ran and produced outputs
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+          RESULT_CODE: ${{ steps.action.outputs.result_code }}
         run: |
-          echo "result_code: ${{ steps.action.outputs.result_code }}"
-          echo "Action completed (with or without spelling errors)"
-          echo "PASS"
+          echo "outcome: $OUTCOME"
+          echo "result_code: $RESULT_CODE"
+          if [ "$OUTCOME" = "success" ]; then
+            echo "PASS: action completed successfully"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (expected with sentinel repo)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

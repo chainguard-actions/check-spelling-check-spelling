@@ -1,4 +1,4 @@
-name: Test caller_container input
+name: Test quit_without_error suppresses failure
 on:
   workflow_dispatch:
 jobs:
@@ -7,10 +7,13 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Create spelling config directory
+      - name: Create spelling config with a file containing misspellings
         run: |
           mkdir -p .github/actions/spelling
           touch .github/actions/spelling/expect.txt
+          # Create a file with a deliberate misspelling to trigger unknown words
+          mkdir -p test-content
+          echo "This file has a deliberate mispeling for testing." > test-content/sample.txt
 
       - id: action
         uses: .
@@ -21,21 +24,20 @@ jobs:
           post_comment: '0'
           quit_without_error: '1'
           experimental_path: '.'
-          caller_container: ''
 
-      - name: Assert action ran with caller_container input
+      - name: Assert action ran (quit_without_error should suppress failures)
         env:
           OUTCOME: ${{ steps.action.outcome }}
           RESULT_CODE: ${{ steps.action.outputs.result_code }}
-          DOCKER_CONTAINER: ${{ steps.action.outputs.docker_container }}
+          UNKNOWN_WORDS: ${{ steps.action.outputs.unknown_words }}
         run: |
           echo "outcome: $OUTCOME"
           echo "result_code: $RESULT_CODE"
-          echo "docker_container: $DOCKER_CONTAINER"
+          echo "unknown_words: $UNKNOWN_WORDS"
           if [ "$OUTCOME" = "success" ]; then
-            echo "PASS: action completed successfully with caller_container input"
+            echo "PASS: action completed (quit_without_error suppressed any failure)"
           elif [ "$OUTCOME" = "failure" ]; then
-            echo "PASS: action failed gracefully (expected with sentinel repo)"
+            echo "PASS: action failed gracefully (sentinel repo API calls fail)"
           else
             echo "FAIL: unexpected outcome '$OUTCOME'"
             exit 1

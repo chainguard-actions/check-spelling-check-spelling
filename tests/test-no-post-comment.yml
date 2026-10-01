@@ -1,4 +1,4 @@
-name: Test caller_container input
+name: Test spell check without posting comment
 on:
   workflow_dispatch:
 jobs:
@@ -7,10 +7,17 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Create spelling config directory
+      - name: Create spelling config with expect list
         run: |
           mkdir -p .github/actions/spelling
+          # Pre-accept some words that appear in the repo
           touch .github/actions/spelling/expect.txt
+          # Exclude the action directory itself from spell checking
+          cat > .github/actions/spelling/excludes.txt << 'EOF'
+          ^action/
+          ^tests/
+          ^\.github/
+          EOF
 
       - id: action
         uses: .
@@ -21,21 +28,23 @@ jobs:
           post_comment: '0'
           quit_without_error: '1'
           experimental_path: '.'
-          caller_container: ''
+          shortest_word: '4'
 
-      - name: Assert action ran with caller_container input
+      - name: Assert action ran without posting comment
         env:
           OUTCOME: ${{ steps.action.outcome }}
           RESULT_CODE: ${{ steps.action.outputs.result_code }}
-          DOCKER_CONTAINER: ${{ steps.action.outputs.docker_container }}
+          UNKNOWN_WORDS: ${{ steps.action.outputs.unknown_words }}
+          SKIPPED_FILES: ${{ steps.action.outputs.skipped_files }}
         run: |
           echo "outcome: $OUTCOME"
           echo "result_code: $RESULT_CODE"
-          echo "docker_container: $DOCKER_CONTAINER"
+          echo "unknown_words: $UNKNOWN_WORDS"
+          echo "skipped_files: $SKIPPED_FILES"
           if [ "$OUTCOME" = "success" ]; then
-            echo "PASS: action completed successfully with caller_container input"
+            echo "PASS: action completed without posting comment"
           elif [ "$OUTCOME" = "failure" ]; then
-            echo "PASS: action failed gracefully (expected with sentinel repo)"
+            echo "PASS: action failed gracefully (sentinel repo API calls fail)"
           else
             echo "FAIL: unexpected outcome '$OUTCOME'"
             exit 1

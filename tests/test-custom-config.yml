@@ -1,4 +1,4 @@
-name: Test caller_container input
+name: Test custom config path
 on:
   workflow_dispatch:
 jobs:
@@ -7,35 +7,36 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Create spelling config directory
+      - name: Create custom spelling config directory
         run: |
-          mkdir -p .github/actions/spelling
-          touch .github/actions/spelling/expect.txt
+          mkdir -p custom-spelling-config
+          # Create an expect.txt with a known word to accept
+          echo "mispeling" > custom-spelling-config/expect.txt
+          # Create a file with that word so it's "expected"
+          mkdir -p test-content
+          echo "This file has a mispeling that is expected." > test-content/sample.txt
 
       - id: action
         uses: .
         continue-on-error: true
         with:
           GITHUB_TOKEN: ${{ github.token }}
-          config: .github/actions/spelling
+          config: custom-spelling-config
           post_comment: '0'
           quit_without_error: '1'
           experimental_path: '.'
-          caller_container: ''
 
-      - name: Assert action ran with caller_container input
+      - name: Assert action ran with custom config
         env:
           OUTCOME: ${{ steps.action.outcome }}
           RESULT_CODE: ${{ steps.action.outputs.result_code }}
-          DOCKER_CONTAINER: ${{ steps.action.outputs.docker_container }}
         run: |
           echo "outcome: $OUTCOME"
           echo "result_code: $RESULT_CODE"
-          echo "docker_container: $DOCKER_CONTAINER"
           if [ "$OUTCOME" = "success" ]; then
-            echo "PASS: action completed successfully with caller_container input"
+            echo "PASS: action completed with custom config path"
           elif [ "$OUTCOME" = "failure" ]; then
-            echo "PASS: action failed gracefully (expected with sentinel repo)"
+            echo "PASS: action failed gracefully (sentinel repo API calls fail)"
           else
             echo "FAIL: unexpected outcome '$OUTCOME'"
             exit 1

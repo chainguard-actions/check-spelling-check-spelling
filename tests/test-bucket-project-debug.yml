@@ -1,4 +1,4 @@
-name: Test caller_container input
+name: Test bucket, project, and debug inputs
 on:
   workflow_dispatch:
 jobs:
@@ -21,19 +21,19 @@ jobs:
           post_comment: '0'
           quit_without_error: '1'
           experimental_path: '.'
-          caller_container: ''
+          bucket: 'check-spelling'
+          project: 'main'
+          debug: '0'
 
-      - name: Assert action ran with caller_container input
+      - name: Assert action ran with bucket, project, and debug inputs
         env:
           OUTCOME: ${{ steps.action.outcome }}
           RESULT_CODE: ${{ steps.action.outputs.result_code }}
-          DOCKER_CONTAINER: ${{ steps.action.outputs.docker_container }}
         run: |
           echo "outcome: $OUTCOME"
           echo "result_code: $RESULT_CODE"
-          echo "docker_container: $DOCKER_CONTAINER"
           if [ "$OUTCOME" = "success" ]; then
-            echo "PASS: action completed successfully with caller_container input"
+            echo "PASS: action completed successfully with bucket/project/debug inputs"
           elif [ "$OUTCOME" = "failure" ]; then
             echo "PASS: action failed gracefully (expected with sentinel repo)"
           else
