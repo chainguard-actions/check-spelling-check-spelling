@@ -426,10 +426,11 @@ runs:
         ALTERNATE_ENGINE: ${{ inputs.alternate_engine }}
       run: |
         : Set up alternate engine
-        repo=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r' | perl -pe 's/\@.*//')
-        branch=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r' | perl -ne 'next unless s/.*\@//; print')
-        echo "repo=$repo" >> "$GITHUB_OUTPUT"
-        echo "branch=$branch" >> "$GITHUB_OUTPUT"
+        safe_engine=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r')
+        repo=$(printf '%s' "$safe_engine" | perl -pe 's/\@.*//')
+        branch=$(printf '%s' "$safe_engine" | perl -ne 'next unless s/.*\@//; print')
+        printf 'repo=%s\n' "$repo" >> "$GITHUB_OUTPUT"
+        printf 'branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
     - name: Shim path and local actions
       shell: bash
       run: |
@@ -445,7 +446,7 @@ runs:
         fi
         echo "$THIS_ACTION_PATH/wrappers" >> "$GITHUB_PATH"
         safe_job_id=$(printf '%s' "$THIS_GITHUB_JOB_ID" | tr -d '\n\r')
-        echo "THIS_GITHUB_JOB_ID=$safe_job_id" >> "$GITHUB_ENV"
+        printf 'THIS_GITHUB_JOB_ID=%s\n' "$safe_job_id" >> "$GITHUB_ENV"
       env:
         THIS_GITHUB_JOB_ID: ${{ github.job }}
     - name: Check actions
@@ -543,12 +544,11 @@ runs:
           set -x
         fi
         git log -1 --one'line' HEAD
-        safe_pr_number=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
-        PRIVATE_CHECKOUT_REF="refs/pull/$safe_pr_number/merge"
+        PRIVATE_CHECKOUT_REF="refs/pull/$PR_NUMBER/merge"
         if git ls-remote origin "$PRIVATE_CHECKOUT_REF" | grep -q . &&
             git fetch origin "$PRIVATE_CHECKOUT_REF"; then
+          safe_ref=$(printf '%s' "$PRIVATE_CHECKOUT_REF" | tr -d '\n\r')
           (
-            safe_ref=$(printf '%s' "$PRIVATE_CHECKOUT_REF" | tr -d '\n\r')
             echo "PRIVATE_CHECKOUT_REF=$safe_ref"
             echo "PRIVATE_SYNTHETIC_SHA=$(git rev-parse HEAD)"
             echo "PRIVATE_MERGE_SHA=$(git rev-parse FETCH_HEAD)"

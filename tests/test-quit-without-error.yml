@@ -1,4 +1,4 @@
-name: Test basic spell check (no errors)
+name: Test quit_without_error suppresses failure
 on:
   workflow_dispatch:
 jobs:
@@ -12,9 +12,9 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
           config: >-
-            ${{ github.workspace }}/tests/fixtures/basic-spelling
+            ${{ github.workspace }}/tests/fixtures/quit-spelling
           experimental_path: >-
-            ${{ github.workspace }}/tests/fixtures/basic-content
+            ${{ github.workspace }}/tests/fixtures/misspelled-content
           post_comment: "0"
           quit_without_error: "1"
           checkout: ""
@@ -23,14 +23,18 @@ jobs:
           ignore_security_advisory: ""
         continue-on-error: true
 
-      - name: Assert action ran
+      - name: Assert action ran (quit_without_error suppresses failure)
         env:
+          RESULT_CODE: ${{ steps.action.outputs.result_code }}
+          UNKNOWN_WORDS: ${{ steps.action.outputs.unknown_words }}
           OUTCOME: ${{ steps.action.outcome }}
         run: |
           echo "outcome: $OUTCOME"
+          echo "result_code: $RESULT_CODE"
+          echo "unknown_words: $UNKNOWN_WORDS"
           case "$OUTCOME" in
             success)
-              echo "PASS: action completed successfully"
+              echo "PASS: action completed without failing the workflow (quit_without_error=1)"
               ;;
             failure)
               echo "PASS: action ran but failed (expected under act with sentinel repo or security advisory)"

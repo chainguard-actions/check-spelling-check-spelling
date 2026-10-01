@@ -1,0 +1,8 @@
+debian
+Debian
+DEBIAN
+emoji
+emojis
+github
+jsoref
+shellcheck

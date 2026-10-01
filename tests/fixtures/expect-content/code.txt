@@ -1,0 +1,1 @@
+This project uses frobnicator and quuxbaz as technical terms.

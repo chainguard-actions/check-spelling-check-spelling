@@ -8,7 +8,7 @@
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
-**Harden Agent Version:** `1`
+**Harden Agent Version:** `2`
 
 Action **check-spelling--check-spelling/v0.0.26** was hardened automatically. 6 finding(s) were identified and resolved across 2 iteration(s).
 
@@ -16,36 +16,36 @@ Action **check-spelling--check-spelling/v0.0.26** was hardened automatically. 6 
 
 ### script-injection (severity: high)
 
-Sub-rule (a): The 'Parse alternate engine' step in action.yml directly interpolates `${{ inputs.alternate_engine }}` inside a `run:` shell command string. This user-controlled input is embedded into the shell before quoting occurs, enabling command injection. Offending lines:
+Sub-rule (a): The 'Parse alternate engine' step in action.yml directly interpolates `${{ inputs.alternate_engine }}` inside a `run:` shell command string. An attacker-controlled value for `inputs.alternate_engine` is embedded verbatim into the shell command before the shell ever sees it, enabling arbitrary command injection. The offending lines are:
   echo "repo=$(echo '${{ inputs.alternate_engine }}' | perl -pe 's/\@.*//')" >> "$GITHUB_OUTPUT"
   echo "branch=$(echo '${{ inputs.alternate_engine }}' | perl -ne 'next unless s/.*\@//; print')" >> "$GITHUB_OUTPUT"
 
 Locations:
 
-- `action.yml:276`
-- `action.yml:277`
+- `action.yml:370`
 
 ### github-env-injection (severity: high)
 
-The 'Parse alternate engine' step writes values derived from `${{ inputs.alternate_engine }}` (a user-controlled input) directly to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`). An attacker can inject newlines into the input to poison subsequent output variable reads.
+The 'Parse alternate engine' step writes values derived from `${{ inputs.alternate_engine }}` (an attacker-controlled input) directly to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`). A newline embedded in `inputs.alternate_engine` can inject arbitrary key=value pairs into GITHUB_OUTPUT, poisoning subsequent steps. The offending lines are:
+  echo "repo=$(echo '${{ inputs.alternate_engine }}' | perl -pe 's/\@.*//')" >> "$GITHUB_OUTPUT"
+  echo "branch=$(echo '${{ inputs.alternate_engine }}' | perl -ne 'next unless s/.*\@//; print')" >> "$GITHUB_OUTPUT"
 
 Locations:
 
-- `action.yml:276`
-- `action.yml:277`
+- `action.yml:370`
 
 ### unpinned-uses (severity: high)
 
-Multiple action files reference external actions using mutable tags or branch names instead of full 40-character commit SHAs, making them vulnerable to supply-chain attacks:
-- actions/checkout/action.yml: `uses: actions/checkout@v6` (tag)
-- actions/publish-coverage/action.yml: `uses: check-spelling/publish-coverage@main` (branch)
-- actions/upload-artifact/action.yml: `uses: actions/upload-artifact@v7` (tag)
+Multiple sub-actions reference external actions by mutable tag or branch instead of a full 40-character commit SHA, making them vulnerable to supply-chain attacks if the referenced tag/branch is moved or compromised:
+- `actions/checkout/action.yml`: uses: actions/checkout@v6 (tag)
+- `actions/upload-artifact/action.yml`: uses: actions/upload-artifact@v7 (tag)
+- `actions/publish-coverage/action.yml`: uses: check-spelling/publish-coverage@main (branch)
 
 Locations:
 
-- `actions/checkout/action.yml:68`
-- `actions/publish-coverage/action.yml:22`
-- `actions/upload-artifact/action.yml:33`
+- `actions/checkout/action.yml:63`
+- `actions/upload-artifact/action.yml:29`
+- `actions/publish-coverage/action.yml:21`
 
 ### static-inline-injection (severity: high)
 
@@ -75,26 +75,23 @@ Locations:
 
 ### Iteration 1
 
-**Fixes applied:** script-injection, github-env-injection, static-inline-injection, static-unsanitized-env-write, unpinned-uses
+**Fixes applied:** unpinned-uses, script-injection, github-env-injection, static-inline-injection, static-unsanitized-env-write
 
 **Notes:**
 
-Fixed all 6 findings across action.yml and the three sub-action files:
+Fixed all 6 findings:
+1. Pinned actions/checkout@v6 to SHA d23441a48e516b6c34aea4fa41551a30e30af803 in actions/checkout/action.yml
+2. Pinned actions/upload-artifact@v7 to SHA 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a in actions/upload-artifact/action.yml
+3. Pinned check-spelling/publish-coverage@main to SHA e4b5547dea6a84ea9981fbd60c8a8601f62823f3 in actions/publish-coverage/action.yml
+4. Fixed script injection in 'Parse alternate engine' step: moved ${{ inputs.alternate_engine }} to env block as ALTERNATE_ENGINE, rewrote run block to use $ALTERNATE_ENGINE
+5. Fixed github-env-injection in 'Parse alternate engine' step: sanitized value with tr -d '\n\r' before writing to $GITHUB_OUTPUT using printf
+6. Fixed unsanitized env write in 'Shim path and local actions' step: sanitized THIS_GITHUB_JOB_ID with tr -d '\n\r' before writing to $GITHUB_ENV using printf
 
-1. script-injection + github-env-injection + static-inline-injection (action.yml lines 276-277/414-415): In the 'Parse alternate engine' step, moved `${{ inputs.alternate_engine }}` from the run: shell string into an env: block as ALTERNATE_ENGINE. Added `printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r'` sanitization pipeline before writing repo and branch values to $GITHUB_OUTPUT.
-
-2. static-unsanitized-env-write (action.yml line 430): In the 'Shim path and local actions' step, added `safe_job_id=$(printf '%s' "$THIS_GITHUB_JOB_ID" | tr -d '\n\r')` before writing to $GITHUB_ENV to prevent newline injection.
-
-3. unpinned-uses: Pinned all three mutable references to full 40-character commit SHAs:
-   - actions/checkout@v6 → @df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-   - check-spelling/publish-coverage@main → @e4b5547dea6a84ea9981fbd60c8a8601f62823f3 # main
-   - actions/upload-artifact@v7 → @043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-
-### Iteration 1
+### Iteration 2
 
 **Fixes applied:** github-env-injection
 
 **Notes:**
 
-Fixed the 'Save SHA' step in action.yml to sanitize the PR_NUMBER value (sourced from github.event.pull_request.number) before using it to construct PRIVATE_CHECKOUT_REF. Added `safe_pr_number=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')` to strip newlines from PR_NUMBER before building the ref string, and added `safe_ref=$(printf '%s' "$PRIVATE_CHECKOUT_REF" | tr -d '\n\r')` to sanitize the final value before writing it to $GITHUB_ENV. This prevents any potential newline injection via the github context value written to the special environment file.
+Fixed the github-env-injection finding in the 'Save SHA' step of action.yml. Added sanitization of PRIVATE_CHECKOUT_REF before writing to $GITHUB_ENV: added `safe_ref=$(printf '%s' "$PRIVATE_CHECKOUT_REF" | tr -d '\n\r')` and changed the echo to use `$safe_ref` instead of the raw `$PRIVATE_CHECKOUT_REF`. This prevents newline injection attacks via crafted PR number values in the event payload.
 

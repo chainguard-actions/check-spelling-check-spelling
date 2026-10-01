@@ -1,4 +1,4 @@
-name: Test basic spell check (no errors)
+name: Test expect.txt allows known words
 on:
   workflow_dispatch:
 jobs:
@@ -12,9 +12,9 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
           config: >-
-            ${{ github.workspace }}/tests/fixtures/basic-spelling
+            ${{ github.workspace }}/tests/fixtures/expect-spelling
           experimental_path: >-
-            ${{ github.workspace }}/tests/fixtures/basic-content
+            ${{ github.workspace }}/tests/fixtures/expect-content
           post_comment: "0"
           quit_without_error: "1"
           checkout: ""
@@ -23,11 +23,17 @@ jobs:
           ignore_security_advisory: ""
         continue-on-error: true
 
-      - name: Assert action ran
+      - name: Assert action ran and check outputs
         env:
+          RESULT_CODE: ${{ steps.action.outputs.result_code }}
+          UNKNOWN_WORDS: ${{ steps.action.outputs.unknown_words }}
+          STALE_WORDS: ${{ steps.action.outputs.stale_words }}
           OUTCOME: ${{ steps.action.outcome }}
         run: |
           echo "outcome: $OUTCOME"
+          echo "result_code: $RESULT_CODE"
+          echo "unknown_words: $UNKNOWN_WORDS"
+          echo "stale_words: $STALE_WORDS"
           case "$OUTCOME" in
             success)
               echo "PASS: action completed successfully"

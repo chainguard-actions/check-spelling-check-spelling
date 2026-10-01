@@ -1,0 +1,11 @@
+ignore$
+\.aff$
+\.dic$
+\.png$
+\.t$
+^LICENSE\.txt$
+^t/.*/
+^\.github/actions/spelling/.*patterns
+^\.github/actions/spelling/expect/
+^homoglyph\.list$
+^version$

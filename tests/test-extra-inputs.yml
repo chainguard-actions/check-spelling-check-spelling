@@ -1,4 +1,4 @@
-name: Test basic spell check (no errors)
+name: Test extra input coverage
 on:
   workflow_dispatch:
 jobs:
@@ -12,15 +12,24 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
           config: >-
-            ${{ github.workspace }}/tests/fixtures/basic-spelling
+            ${{ github.workspace }}/hardened/tests/fixtures/basic-spelling
           experimental_path: >-
-            ${{ github.workspace }}/tests/fixtures/basic-content
+            ${{ github.workspace }}/hardened/tests/fixtures/basic-content
           post_comment: "0"
           quit_without_error: "1"
           checkout: ""
           check_extra_dictionaries: ""
           use_sarif: ""
           ignore_security_advisory: ""
+          # Extra inputs for coverage
+          bucket: ""
+          project: ""
+          debug: ""
+          experimental_parallel_jobs: "1"
+          caller_container: ""
+          checkout-token: ${{ github.token }}
+          sarif-token: ${{ github.token }}
+          ignore-next-line: "# spell-checker:disable-line"
         continue-on-error: true
 
       - name: Assert action ran
