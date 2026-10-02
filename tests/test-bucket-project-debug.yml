@@ -1,4 +1,4 @@
-name: Test debug mode
+name: Test bucket, project, and debug inputs
 on:
   workflow_dispatch:
 jobs:
@@ -11,10 +11,6 @@ jobs:
         run: |
           mkdir -p .github/actions/spelling
           touch .github/actions/spelling/expect.txt
-          cat > .github/actions/spelling/excludes.txt << 'EOF'
-          ^tests/
-          ^\.github/
-          EOF
 
       - id: action
         uses: .
@@ -24,10 +20,12 @@ jobs:
           config: .github/actions/spelling
           post_comment: '0'
           quit_without_error: '1'
-          debug: '1'
           experimental_path: '.'
+          bucket: ''
+          project: ''
+          debug: '0'
 
-      - name: Assert action ran with debug enabled
+      - name: Assert action ran with bucket, project, and debug inputs
         env:
           OUTCOME: ${{ steps.action.outcome }}
           RESULT_CODE: ${{ steps.action.outputs.result_code }}
@@ -35,9 +33,9 @@ jobs:
           echo "outcome: $OUTCOME"
           echo "result_code: $RESULT_CODE"
           if [ "$OUTCOME" = "success" ]; then
-            echo "PASS: action completed successfully with debug enabled"
+            echo "PASS: action completed successfully with bucket/project/debug inputs"
           elif [ "$OUTCOME" = "failure" ]; then
-            echo "PASS: action failed gracefully (expected with sentinel repo)"
+            echo "PASS: action failed gracefully (sentinel repo API calls fail)"
           else
             echo "FAIL: unexpected outcome '$OUTCOME'"
             exit 1

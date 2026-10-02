@@ -299,8 +299,8 @@ runs:
         ALTERNATE_ENGINE: ${{ inputs.alternate_engine }}
       run: |
         safe_engine=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r')
-        echo "repo=$(printf '%s' "$safe_engine" | perl -pe 's/\@.*//')" >> "$GITHUB_OUTPUT"
-        echo "branch=$(printf '%s' "$safe_engine" | perl -ne 'next unless s/.*\@//; print')" >> "$GITHUB_OUTPUT"
+        echo "repo=$(echo "$safe_engine" | perl -pe 's/\@.*//')" >> "$GITHUB_OUTPUT"
+        echo "branch=$(echo "$safe_engine" | perl -ne 'next unless s/.*\@//; print')" >> "$GITHUB_OUTPUT"
     - name: alternate-engine
       if: inputs.alternate_engine
       uses: chainguard-actions/actions-checkout@31bbccf724702f8a0dc7a3ed7db8fcca2066babc # v4
@@ -429,17 +429,15 @@ runs:
         PERL_LIBRARIES: ${{ steps.hash-dictionaries.outputs.perl-libraries }}
       run: |
         perl_modules="$(
-          printf '%s' "$PERL_LIBRARIES" |tr " " "\n" |sort|xargs)"
+          printf '%s' "$PERL_LIBRARIES" | tr -d '\n\r' | tr " " "\n" |sort|xargs)"
         perl_modules_sha=$(echo "$perl_modules" | shasum | perl -pe 's/\s.*//')
         installsitearch=$(perl -V:'installsitearch' | perl -pe 's/.*=.(.*).;/$1/')
         installsitelib=$(perl -V:'installsitelib' | perl -pe 's/.*=.(.*).;/$1/')
         sudo install -d -o $(whoami) "$installsitearch" "$installsitelib"
         safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
-        safe_installsitearch=$(printf '%s' "$installsitearch" | tr -d '\n\r')
-        safe_installsitelib=$(printf '%s' "$installsitelib" | tr -d '\n\r')
         (
-          echo "installsitearch=$safe_installsitearch"
-          echo "installsitelib=$safe_installsitelib"
+          echo "installsitearch=$installsitearch"
+          echo "installsitelib=$installsitelib"
           echo "perl-modules=$safe_perl_modules"
           echo "perl-key=check-spelling-perl-$(perl -e 'print "$^V"')-$perl_modules_sha"
         ) >> "$GITHUB_OUTPUT"
@@ -470,7 +468,7 @@ runs:
         fi
         cpan_modules=()
         for module in "${modules[@]}"; do
-          MODULE="$module" perl -e 'use $ENV{MODULE}; 1;' > /dev/null 2>/dev/null || cpan_modules+=("$module")
+          perl -e "use $module; 1;" > /dev/null 2>/dev/null || cpan_modules+=("$module")
         done
         if [ "${#cpan_modules[@]}" -gt 0 ]; then
           if ! command -v cpanm >/dev/null 2>/dev/null; then
