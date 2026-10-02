@@ -367,7 +367,7 @@ runs:
     - name: checkout-merge
       id: checkout-merge
       if: github.event.pull_request.number && (contains(github.event_name, 'pull_request')) && (inputs.checkout && inputs.checkout != 'false' && !inputs.custom_task && !inputs.task)
-      uses: check-spelling/checkout-merge@3aa4a3dfa942930fc6d88a77e55f6e0001445cdc # v0.0.4
+      uses: chainguard-actions/check-spelling-checkout-merge@8289b36d6b793ec8d9fded05215886859d430a98 # v0.0.4
       with:
         path: ${{ inputs.experimental_path }}
     - name: raise-merge-failure
