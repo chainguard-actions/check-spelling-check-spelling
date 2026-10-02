@@ -1,4 +1,4 @@
-name: Test caller_container input
+name: Test bucket and project inputs
 on:
   workflow_dispatch:
 jobs:
@@ -17,25 +17,24 @@ jobs:
         continue-on-error: true
         with:
           GITHUB_TOKEN: ${{ github.token }}
+          bucket: check-spelling
+          project: main
           config: .github/actions/spelling
           post_comment: '0'
           quit_without_error: '1'
           experimental_path: '.'
-          caller_container: ''
 
-      - name: Assert action ran with caller_container input
+      - name: Assert action ran with bucket and project inputs
         env:
           OUTCOME: ${{ steps.action.outcome }}
           RESULT_CODE: ${{ steps.action.outputs.result_code }}
-          DOCKER_CONTAINER: ${{ steps.action.outputs.docker_container }}
         run: |
           echo "outcome: $OUTCOME"
           echo "result_code: $RESULT_CODE"
-          echo "docker_container: $DOCKER_CONTAINER"
           if [ "$OUTCOME" = "success" ]; then
-            echo "PASS: action completed successfully with caller_container input"
+            echo "PASS: action completed successfully with bucket/project inputs"
           elif [ "$OUTCOME" = "failure" ]; then
-            echo "PASS: action failed gracefully (sentinel repo API calls fail)"
+            echo "PASS: action failed gracefully (expected with sentinel repo or remote bucket)"
           else
             echo "FAIL: unexpected outcome '$OUTCOME'"
             exit 1

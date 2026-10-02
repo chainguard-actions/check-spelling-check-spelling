@@ -298,9 +298,10 @@ runs:
       env:
         ALTERNATE_ENGINE: ${{ inputs.alternate_engine }}
       run: |
-        safe_engine=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r')
-        echo "repo=$(echo "$safe_engine" | perl -pe 's/\@.*//')" >> "$GITHUB_OUTPUT"
-        echo "branch=$(echo "$safe_engine" | perl -ne 'next unless s/.*\@//; print')" >> "$GITHUB_OUTPUT"
+        repo=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r' | perl -pe 's/\@.*//')
+        branch=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r' | perl -ne 'next unless s/.*\@//; print')
+        printf 'repo=%s\n' "$repo" >> "$GITHUB_OUTPUT"
+        printf 'branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
     - name: alternate-engine
       if: inputs.alternate_engine
       uses: chainguard-actions/actions-checkout@31bbccf724702f8a0dc7a3ed7db8fcca2066babc # v4
@@ -382,12 +383,12 @@ runs:
         EXPERIMENTAL_PATH: ${{ inputs.experimental_path }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        cd "$EXPERIMENTAL_PATH"
+        safe_path=$(printf '%s' "$EXPERIMENTAL_PATH" | tr -d '\n\r')
+        cd "$safe_path"
         git show HEAD
         safe_pr_number=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
-        PRIVATE_SARIF_REF="refs/pull/$safe_pr_number/merge"
-        safe_ref=$(printf '%s' "$PRIVATE_SARIF_REF" | tr -d '\n\r')
-        echo "PRIVATE_SARIF_REF=$safe_ref" >> "$GITHUB_ENV"
+        PRIVATE_SARIF_REF="refs/pull/${safe_pr_number}/merge"
+        printf 'PRIVATE_SARIF_REF=%s\n' "$PRIVATE_SARIF_REF" >> "$GITHUB_ENV"
         git fetch origin "$PRIVATE_SARIF_REF"
         echo "PRIVATE_SARIF_SHA=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
     - name: prepare
@@ -429,12 +430,12 @@ runs:
         PERL_LIBRARIES: ${{ steps.hash-dictionaries.outputs.perl-libraries }}
       run: |
         perl_modules="$(
-          printf '%s' "$PERL_LIBRARIES" | tr -d '\n\r' | tr " " "\n" |sort|xargs)"
+          printf '%s' "$PERL_LIBRARIES" |tr " " "\n" |sort|xargs)"
+        safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
         perl_modules_sha=$(echo "$perl_modules" | shasum | perl -pe 's/\s.*//')
         installsitearch=$(perl -V:'installsitearch' | perl -pe 's/.*=.(.*).;/$1/')
         installsitelib=$(perl -V:'installsitelib' | perl -pe 's/.*=.(.*).;/$1/')
         sudo install -d -o $(whoami) "$installsitearch" "$installsitelib"
-        safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
         (
           echo "installsitearch=$installsitearch"
           echo "installsitelib=$installsitelib"
@@ -462,20 +463,18 @@ runs:
         PERL_MODULES: ${{ steps.perl-config.outputs.perl-modules }}
       run: |
         modules=()
-        if [ -n "$PERL_MODULES" ]; then
-          while IFS= read -r -d '' t; do modules+=("$t"); done \
-            < <(printf '%s' "$PERL_MODULES" | xargs printf '%s\0')
-        fi
+        while IFS= read -r -d '' t; do modules+=("$t"); done \
+          < <(printf '%s' "$PERL_MODULES" | xargs printf '%s\0')
         cpan_modules=()
         for module in "${modules[@]}"; do
           perl -e "use $module; 1;" > /dev/null 2>/dev/null || cpan_modules+=("$module")
         done
         if [ "${#cpan_modules[@]}" -gt 0 ]; then
           if ! command -v cpanm >/dev/null 2>/dev/null; then
-            CPANM_INSTALL=$(mktemp)
-            curl -s -S -L https://cpanmin.us -o "$CPANM_INSTALL"
-            perl "$CPANM_INSTALL" --sudo App::cpanminus
-            rm -f "$CPANM_INSTALL"
+            CPANM_SCRIPT=$(mktemp)
+            curl -s -S -L https://cpanmin.us -o "$CPANM_SCRIPT"
+            perl "$CPANM_SCRIPT" --sudo App::cpanminus
+            rm -f "$CPANM_SCRIPT"
           fi
           perl "$(command -v cpanm)" -S --notest "${cpan_modules[@]}"
         fi
