@@ -1,4 +1,4 @@
-name: Test extra input coverage
+name: Test extra inputs coverage
 on:
   workflow_dispatch:
 jobs:
@@ -12,34 +12,34 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
           config: >-
-            ${{ github.workspace }}/hardened/tests/fixtures/basic-spelling
+            ${{ github.workspace }}/tests/fixtures/basic-spelling
           experimental_path: >-
-            ${{ github.workspace }}/hardened/tests/fixtures/basic-content
+            ${{ github.workspace }}/tests/fixtures/basic-content
           post_comment: "0"
           quit_without_error: "1"
           checkout: ""
           check_extra_dictionaries: ""
           use_sarif: ""
           ignore_security_advisory: ""
-          # Extra inputs for coverage
+          # Inputs required for coverage
           bucket: ""
           project: ""
-          debug: ""
+          debug: "0"
           experimental_parallel_jobs: "1"
+          ignore-next-line: "# spell-checker:disable-next-line"
           caller_container: ""
           checkout-token: ${{ github.token }}
           sarif-token: ${{ github.token }}
-          ignore-next-line: "# spell-checker:disable-line"
         continue-on-error: true
 
-      - name: Assert action ran
+      - name: Assert action ran with extra inputs
         env:
           OUTCOME: ${{ steps.action.outcome }}
         run: |
           echo "outcome: $OUTCOME"
           case "$OUTCOME" in
             success)
-              echo "PASS: action completed successfully"
+              echo "PASS: action completed successfully with extra inputs"
               ;;
             failure)
               echo "PASS: action ran but failed (expected under act with sentinel repo or security advisory)"
