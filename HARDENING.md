@@ -10,97 +10,61 @@
 
 **Harden Agent Version:** `2`
 
-Action **check-spelling--check-spelling/v0.0.22** was hardened automatically. 13 finding(s) were identified and resolved across 2 iteration(s).
+Action **check-spelling--check-spelling/v0.0.22** was hardened automatically. 8 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Sub-rule (a): The 'parse alternate engine' step directly interpolates ${{ inputs.alternate_engine }} inside a run: shell command. This allows an attacker-controlled input to inject arbitrary shell commands. Offending lines: echo "repo=$(echo '${{ inputs.alternate_engine }}' | perl ...)" >> "$GITHUB_OUTPUT" and echo "branch=$(echo '${{ inputs.alternate_engine }}' | perl ...)" >> "$GITHUB_OUTPUT"
+Multiple run: blocks in action.yml directly interpolate ${{ ... }} expressions into shell commands (rule a), enabling script injection. (1) 'parse alternate engine' step: echo "repo=$(echo '${{ inputs.alternate_engine }}' | perl ...)" >> "$GITHUB_OUTPUT" — inputs.alternate_engine is attacker-controlled and interpolated directly into the shell. (2) 'save sha' step: cd "${{ inputs.experimental_path }}" and PRIVATE_SARIF_REF="refs/pull/${{ github.event.pull_request.number }}/merge" — both inputs.experimental_path and github.event.pull_request.number are interpolated directly. (3) 'perl configuration' step: echo "${{ steps.hash-dictionaries.outputs.perl-libraries }}" — step output interpolated directly into shell. (4) 'install perl modules' step: for module in ${{ steps.perl-config.outputs.perl-modules }}; do — step output interpolated directly into a for-loop, allowing word-splitting and shell metacharacter injection.
 
 Locations:
 
-- `action.yml:278`
-- `action.yml:279`
-
-### script-injection (severity: high)
-
-Sub-rule (a): The 'save sha' step directly interpolates ${{ inputs.experimental_path }} and ${{ github.event.pull_request.number }} inside run: shell commands. Offending lines: cd "${{ inputs.experimental_path }}" and PRIVATE_SARIF_REF="refs/pull/${{ github.event.pull_request.number }}/merge"
-
-Locations:
-
-- `action.yml:332`
-- `action.yml:334`
-
-### script-injection (severity: high)
-
-Sub-rule (a): The 'perl configuration' step directly interpolates ${{ steps.hash-dictionaries.outputs.perl-libraries }} inside a run: shell command. Offending line: echo "${{ steps.hash-dictionaries.outputs.perl-libraries }}" |tr " " "\n" |sort|xargs
-
-Locations:
-
-- `action.yml:374`
-
-### script-injection (severity: high)
-
-Sub-rule (a): The 'install perl modules' step directly interpolates ${{ steps.perl-config.outputs.perl-modules }} inside a run: shell for-loop, allowing step output to inject arbitrary shell commands. Offending line: for module in ${{ steps.perl-config.outputs.perl-modules }}; do
-
-Locations:
-
-- `action.yml:393`
-
-### script-injection (severity: high)
-
-Sub-rule (a): The 'Shim Sarif' step directly interpolates ${{ inputs.experimental_path }} inside a run: shell command. Offending line: cd "${{ inputs.experimental_path }}"
-
-Locations:
-
-- `action.yml:446`
+- `action.yml:248`
+- `action.yml:249`
+- `action.yml:296`
+- `action.yml:298`
+- `action.yml:340`
+- `action.yml:360`
 
 ### github-env-injection (severity: high)
 
-The 'parse alternate engine' step writes values derived from ${{ inputs.alternate_engine }} (attacker-controlled) directly to $GITHUB_OUTPUT without sanitization (no printf '%s' ... | tr -d '\n\r'). A newline in the input can inject arbitrary output variables.
+Unsanitized untrusted values are written to $GITHUB_OUTPUT and $GITHUB_ENV without the required printf '%s' ... | tr -d '\n\r' sanitization step. (1) 'parse alternate engine' step: echo "repo=$(echo '${{ inputs.alternate_engine }}' | perl ...)" >> "$GITHUB_OUTPUT" and the branch echo — inputs.alternate_engine (attacker-controlled) is written to GITHUB_OUTPUT without newline sanitization. (2) 'save sha' step: echo "PRIVATE_SARIF_REF=$PRIVATE_SARIF_REF" >> "$GITHUB_ENV" where PRIVATE_SARIF_REF is derived from ${{ github.event.pull_request.number }} — written to GITHUB_ENV without sanitization.
 
 Locations:
 
-- `action.yml:278`
-- `action.yml:279`
-
-### github-env-injection (severity: high)
-
-The 'save sha' step writes PRIVATE_SARIF_REF (derived from ${{ github.event.pull_request.number }}) to $GITHUB_ENV without sanitization. Offending line: echo "PRIVATE_SARIF_REF=$PRIVATE_SARIF_REF" >> "$GITHUB_ENV". A newline in the value could inject arbitrary environment variables.
-
-Locations:
-
-- `action.yml:335`
+- `action.yml:248`
+- `action.yml:249`
+- `action.yml:298`
 
 ### unsafe-shell (severity: high)
 
-The 'install perl modules' step pipes remote content directly to a Perl interpreter: curl -s -S -L https://cpanmin.us | perl - --sudo App::cpanminus. This executes remotely-fetched code without integrity verification, enabling supply-chain attacks.
+The 'install perl modules' step pipes remote content directly to a Perl interpreter: `curl -s -S -L https://cpanmin.us | perl - --sudo App::cpanminus`. If the remote URL is compromised or the connection is intercepted, arbitrary code will be executed on the runner with sudo privileges.
 
 Locations:
 
-- `action.yml:398`
+- `action.yml:365`
 
 ### unpinned-uses (severity: high)
 
-All 14 uses: references in action.yml use mutable version tags instead of immutable 40-character SHA commit pins, making the action vulnerable to supply-chain attacks. Unpinned references include: actions/checkout@v4, check-spelling/actions-checkout@v4, check-spelling/checkout-merge@v0.0.4, actions/download-artifact@v3, actions/cache/restore@v3 (x2), actions/cache/save@v3 (x3), actions/upload-artifact@v3 (x2), github/codeql-action/upload-sarif@v2.
+All uses: references in action.yml use mutable tags instead of pinned 40-character SHA digests, making the action vulnerable to supply-chain attacks. Failing references: actions/checkout@v4 (x2), check-spelling/actions-checkout@v4, check-spelling/checkout-merge@v0.0.4, actions/download-artifact@v3, actions/cache/restore@v3 (x3), actions/cache/save@v3 (x3), actions/upload-artifact@v3 (x2), github/codeql-action/upload-sarif@v2.
 
 Locations:
 
-- `action.yml:284`
-- `action.yml:302`
-- `action.yml:315`
-- `action.yml:325`
-- `action.yml:344`
-- `action.yml:356`
-- `action.yml:363`
-- `action.yml:370`
-- `action.yml:408`
-- `action.yml:421`
-- `action.yml:432`
-- `action.yml:438`
-- `action.yml:449`
-- `action.yml:456`
+- `action.yml:270`
+- `action.yml:278`
+- `action.yml:285`
+- `action.yml:292`
+- `action.yml:305`
+- `action.yml:316`
+- `action.yml:326`
+- `action.yml:333`
+- `action.yml:346`
+- `action.yml:352`
+- `action.yml:358`
+- `action.yml:375`
+- `action.yml:393`
+- `action.yml:400`
 
 ### static-inline-injection (severity: high)
 
@@ -142,23 +106,13 @@ Locations:
 
 **Notes:**
 
-Fixed all 14 findings in action.yml:
+Fixed all findings in action.yml:
 
-1. script-injection (5 instances): Moved all ${{ }} expressions from run: blocks to env: blocks - ALTERNATE_ENGINE in 'parse alternate engine', EXPERIMENTAL_PATH+PR_NUMBER in 'save sha', PERL_LIBRARIES in 'perl configuration', PERL_MODULES in 'install perl modules' (with xargs tokenization for list input), EXPERIMENTAL_PATH in 'Shim Sarif'.
+1. script-injection/static-inline-injection: Moved all ${{ }} expressions from run: blocks to env: maps. 'parse alternate engine' uses ALTERNATE_ENGINE env var; 'save sha' uses EXPERIMENTAL_PATH and PR_NUMBER; 'perl configuration' uses PERL_LIBRARIES; 'install perl modules' uses PERL_MODULES with xargs-based bash array tokenization; 'Shim Sarif' uses EXPERIMENTAL_PATH.
 
-2. github-env-injection (2 instances): Added printf '%s' | tr -d '\n\r' sanitization before writing to GITHUB_OUTPUT/GITHUB_ENV in 'parse alternate engine' and 'save sha' steps.
+2. github-env-injection: Added printf '%s' | tr -d '\n\r' sanitization in 'parse alternate engine' before writing to GITHUB_OUTPUT, and in 'save sha' before writing to GITHUB_ENV.
 
-3. unsafe-shell (1 instance): Fixed curl|perl pipe in 'install perl modules' by downloading cpanmin.us to a mktemp file first, then executing it separately with perl.
+3. unsafe-shell: Replaced 'curl ... | perl - --sudo App::cpanminus' with download-to-tempfile-then-execute pattern using mktemp and curl -o.
 
-4. unpinned-uses (14 instances): Pinned all action references to full commit SHAs - actions/checkout@v4→11d5960a (x2), check-spelling/actions-checkout@v4→cb50106c, check-spelling/checkout-merge@v0.0.4→3aa4a3df, actions/download-artifact@v3→9bc31d5c, actions/cache/restore@v3→6f8efc29 (x3), actions/cache/save@v3→6f8efc29 (x3), actions/upload-artifact@v3→ff15f030 (x2), github/codeql-action/upload-sarif@v2→b8d3b6e8.
-
-5. static-inline-injection (4 instances): Same fixes as script-injection above - all ${{ }} expressions moved to env: blocks.
-
-### Iteration 2
-
-**Fixes applied:** github-env-injection
-
-**Notes:**
-
-Fixed the github-env-injection finding in the 'perl-config' step of action.yml. The `perl_modules` variable (derived from the untrusted `PERL_LIBRARIES` step output, which comes from `steps.hash-dictionaries.outputs.perl-libraries`) was being written directly to `$GITHUB_OUTPUT` without newline sanitization. Added a sanitization step: `safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')` and replaced the `echo "perl-modules=$perl_modules"` line with `echo "perl-modules=$safe_perl_modules"` to prevent newline injection attacks.
+4. unpinned-uses: Pinned all 14 action references to full 40-character SHA digests: actions/checkout@v4 (x2) → 11d5960..., check-spelling/actions-checkout@v4 → cb50106..., check-spelling/checkout-merge@v0.0.4 → 3aa4a3d..., actions/download-artifact@v3 → 9bc31d5..., actions/cache/restore@v3 (x3) → 6f8efc2..., actions/cache/save@v3 (x3) → 6f8efc2..., actions/upload-artifact@v3 (x2) → ff15f03..., github/codeql-action/upload-sarif@v2 → b8d3b6e...
 
