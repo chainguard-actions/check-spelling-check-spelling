@@ -386,7 +386,8 @@ runs:
         git show HEAD
         safe_pr_number=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
         PRIVATE_SARIF_REF="refs/pull/$safe_pr_number/merge"
-        echo "PRIVATE_SARIF_REF=$PRIVATE_SARIF_REF" >> "$GITHUB_ENV"
+        safe_ref=$(printf '%s' "$PRIVATE_SARIF_REF" | tr -d '\n\r')
+        echo "PRIVATE_SARIF_REF=$safe_ref" >> "$GITHUB_ENV"
         git fetch origin "$PRIVATE_SARIF_REF"
         echo "PRIVATE_SARIF_SHA=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
     - name: prepare
@@ -429,14 +430,16 @@ runs:
       run: |
         perl_modules="$(
           printf '%s' "$PERL_LIBRARIES" |tr " " "\n" |sort|xargs)"
-        safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
-        perl_modules_sha=$(echo "$safe_perl_modules" | shasum | perl -pe 's/\s.*//')
+        perl_modules_sha=$(echo "$perl_modules" | shasum | perl -pe 's/\s.*//')
         installsitearch=$(perl -V:'installsitearch' | perl -pe 's/.*=.(.*).;/$1/')
         installsitelib=$(perl -V:'installsitelib' | perl -pe 's/.*=.(.*).;/$1/')
         sudo install -d -o $(whoami) "$installsitearch" "$installsitelib"
+        safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
+        safe_installsitearch=$(printf '%s' "$installsitearch" | tr -d '\n\r')
+        safe_installsitelib=$(printf '%s' "$installsitelib" | tr -d '\n\r')
         (
-          echo "installsitearch=$installsitearch"
-          echo "installsitelib=$installsitelib"
+          echo "installsitearch=$safe_installsitearch"
+          echo "installsitelib=$safe_installsitelib"
           echo "perl-modules=$safe_perl_modules"
           echo "perl-key=check-spelling-perl-$(perl -e 'print "$^V"')-$perl_modules_sha"
         ) >> "$GITHUB_OUTPUT"
@@ -460,16 +463,21 @@ runs:
       env:
         PERL_MODULES: ${{ steps.perl-config.outputs.perl-modules }}
       run: |
+        modules=()
+        if [ -n "$PERL_MODULES" ]; then
+          while IFS= read -r -d '' t; do modules+=("$t"); done \
+            < <(printf '%s' "$PERL_MODULES" | xargs printf '%s\0')
+        fi
         cpan_modules=()
-        while IFS= read -r -d '' module; do
-          MODULE="$module" perl -e 'eval "use $ENV{MODULE}; 1" or die $@;' > /dev/null 2>/dev/null || cpan_modules+=("$module")
-        done < <(printf '%s' "$PERL_MODULES" | xargs printf '%s\0')
+        for module in "${modules[@]}"; do
+          MODULE="$module" perl -e 'use $ENV{MODULE}; 1;' > /dev/null 2>/dev/null || cpan_modules+=("$module")
+        done
         if [ "${#cpan_modules[@]}" -gt 0 ]; then
           if ! command -v cpanm >/dev/null 2>/dev/null; then
-            CPANM_SCRIPT=$(mktemp)
-            curl -s -S -L -o "$CPANM_SCRIPT" https://cpanmin.us
-            perl "$CPANM_SCRIPT" --sudo App::cpanminus
-            rm -f "$CPANM_SCRIPT"
+            CPANM_INSTALL=$(mktemp)
+            curl -s -S -L https://cpanmin.us -o "$CPANM_INSTALL"
+            perl "$CPANM_INSTALL" --sudo App::cpanminus
+            rm -f "$CPANM_INSTALL"
           fi
           perl "$(command -v cpanm)" -S --notest "${cpan_modules[@]}"
         fi
