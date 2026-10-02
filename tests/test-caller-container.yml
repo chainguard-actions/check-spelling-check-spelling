@@ -6,13 +6,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create spelling config directory
+        run: |
+          mkdir -p .github/actions/spelling
+          touch .github/actions/spelling/expect.txt
+
       - id: action
         uses: .
         continue-on-error: true
         with:
-          caller_container: ''
+          GITHUB_TOKEN: ${{ github.token }}
+          config: .github/actions/spelling
           post_comment: '0'
           quit_without_error: '1'
+          experimental_path: '.'
+          caller_container: ''
+
       - name: Assert action ran with caller_container input
         env:
           OUTCOME: ${{ steps.action.outcome }}
@@ -23,9 +33,9 @@ jobs:
           echo "result_code: $RESULT_CODE"
           echo "docker_container: $DOCKER_CONTAINER"
           if [ "$OUTCOME" = "success" ]; then
-            echo "PASS: action succeeded with caller_container input"
+            echo "PASS: action completed successfully with caller_container input"
           elif [ "$OUTCOME" = "failure" ]; then
-            echo "PASS: action failed gracefully (expected under sentinel repo)"
+            echo "PASS: action failed gracefully (expected with sentinel repo)"
           else
             echo "FAIL: unexpected outcome '$OUTCOME'"
             exit 1
