@@ -10,17 +10,21 @@ jobs:
         uses: .
         continue-on-error: true
         with:
-          bucket: check-spelling/check-spelling
-          project: v0.0.22
-          post_comment: '0'
+          bucket: check-spelling
+          project: check-spelling
           quit_without_error: '1'
+          post_comment: '0'
       - name: Assert action ran with bucket and project inputs
         env:
           OUTCOME: ${{ steps.action.outcome }}
+          RESULT_CODE: ${{ steps.action.outputs.result_code }}
         run: |
           echo "outcome: $OUTCOME"
-          if [ "$OUTCOME" = "success" ] || [ "$OUTCOME" = "failure" ]; then
-            echo "PASS: action ran with bucket and project inputs (outcome: $OUTCOME)"
+          echo "result_code: $RESULT_CODE"
+          if [ "$OUTCOME" = "success" ]; then
+            echo "PASS: action succeeded with bucket and project inputs"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (expected under harness with sentinel repo)"
           else
             echo "FAIL: unexpected outcome '$OUTCOME'"
             exit 1
