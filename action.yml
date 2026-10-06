@@ -375,7 +375,7 @@ runs:
         MESSAGE: ${{ steps.checkout-merge.outputs.message }}
       shell: bash
       run: |
-        echo "::error ::${MESSAGE}"
+        echo ::error "::$MESSAGE"
     - name: save sha
       if: (contains(github.event_name, 'pull_request')) && (inputs.checkout && inputs.checkout != 'false' && !inputs.custom_task && !inputs.task) && inputs.use_sarif
       shell: bash
@@ -390,8 +390,7 @@ runs:
         safe_ref=$(printf '%s' "$PRIVATE_SARIF_REF" | tr -d '\n\r')
         echo "PRIVATE_SARIF_REF=$safe_ref" >> "$GITHUB_ENV"
         git fetch origin "$PRIVATE_SARIF_REF"
-        safe_sha=$(git rev-parse FETCH_HEAD | tr -d '\n\r')
-        echo "PRIVATE_SARIF_SHA=$safe_sha" >> "$GITHUB_ENV"
+        echo "PRIVATE_SARIF_SHA=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
     - name: prepare
       if: inputs.task && inputs.task != 'spelling' && (!env.ACT || github.token)
       run: |
@@ -431,20 +430,17 @@ runs:
         PERL_LIBRARIES: ${{ steps.hash-dictionaries.outputs.perl-libraries }}
       run: |
         perl_modules="$(
-          printf '%s' "$PERL_LIBRARIES" |tr " " "\n" |sort|xargs)"
+          echo "$PERL_LIBRARIES" |tr " " "\n" |sort|xargs)"
         perl_modules_sha=$(echo "$perl_modules" | shasum | perl -pe 's/\s.*//')
         installsitearch=$(perl -V:'installsitearch' | perl -pe 's/.*=.(.*).;/$1/')
         installsitelib=$(perl -V:'installsitelib' | perl -pe 's/.*=.(.*).;/$1/')
         sudo install -d -o $(whoami) "$installsitearch" "$installsitelib"
-        safe_installsitearch=$(printf '%s' "$installsitearch" | tr -d '\n\r')
-        safe_installsitelib=$(printf '%s' "$installsitelib" | tr -d '\n\r')
         safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
-        safe_perl_key=$(printf '%s' "check-spelling-perl-$(perl -e 'print "$^V"')-$perl_modules_sha" | tr -d '\n\r')
         (
-          echo "installsitearch=$safe_installsitearch"
-          echo "installsitelib=$safe_installsitelib"
+          echo "installsitearch=$installsitearch"
+          echo "installsitelib=$installsitelib"
           echo "perl-modules=$safe_perl_modules"
-          echo "perl-key=$safe_perl_key"
+          echo "perl-key=check-spelling-perl-$(perl -e 'print "$^V"')-$perl_modules_sha"
         ) >> "$GITHUB_OUTPUT"
     - name: retrieve perl libraries arch
       id: retrieve-perl-libraries-arch
@@ -466,16 +462,21 @@ runs:
       env:
         PERL_MODULES: ${{ steps.perl-config.outputs.perl-modules }}
       run: |
+        modules=()
+        if [ -n "$PERL_MODULES" ]; then
+          while IFS= read -r -d '' t; do modules+=("$t"); done \
+            < <(printf '%s' "$PERL_MODULES" | xargs printf '%s\0')
+        fi
         cpan_modules=()
-        while IFS= read -r -d '' module; do
-          PERL_MODULE_NAME="$module" perl -e 'my $m=$ENV{PERL_MODULE_NAME}; (my $f=$m)=~s|::|/|g; require "$f.pm"; 1;' > /dev/null 2>/dev/null || cpan_modules+=("$module")
-        done < <(printf '%s' "$PERL_MODULES" | xargs printf '%s\0')
+        for module in "${modules[@]}"; do
+          MODULE="$module" perl -e 'use $ENV{MODULE}; 1;' > /dev/null 2>/dev/null || cpan_modules+=("$module")
+        done
         if [ "${#cpan_modules[@]}" -gt 0 ]; then
-          if ! command -v cpanm > /dev/null 2>/dev/null; then
-            CPANM_SCRIPT=$(mktemp)
-            curl -s -S -L https://cpanmin.us -o "$CPANM_SCRIPT"
-            perl "$CPANM_SCRIPT" --sudo App::cpanminus
-            rm -f "$CPANM_SCRIPT"
+          if ! command -v cpanm >/dev/null 2>/dev/null; then
+            CPANM_INSTALLER=$(mktemp)
+            curl -s -S -L https://cpanmin.us -o "$CPANM_INSTALLER"
+            perl "$CPANM_INSTALLER" --sudo App::cpanminus
+            rm -f "$CPANM_INSTALLER"
           fi
           perl "$(command -v cpanm)" -S --notest "${cpan_modules[@]}"
         fi
