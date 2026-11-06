@@ -1,3 +1,0 @@
-# Known words for testing
-helloworld
-spellcheck
