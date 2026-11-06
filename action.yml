@@ -147,7 +147,9 @@ inputs:
     default: "5"
   event_aliases:
     description: >-
-      Try to treat a GitHub event "a" as GitHub event "b" (JSON map). If this flag was available before this tool recognized `pull_request_target`, `{"pull_request_target":"pull_request"}` would have mapped it to `pull_request`.
+      Try to treat a GitHub event "a" as GitHub event "b" (JSON map).
+      If this flag was available before this tool recognized `pull_request_target`,
+      `{"pull_request_target":"pull_request"}` would have mapped it to `pull_request`.
     required: false
     default: ""
   shortest_word:
@@ -355,6 +357,7 @@ inputs:
         ],
         "": []
       }
+
 outputs:
   unknown_words:
     description: "Unrecognized words (should be added to expect.txt)"
@@ -383,6 +386,7 @@ outputs:
   docker_container:
     description: "Hack for nektos/act - pass to inputs.caller_container to give check-spelling a way to retrieve data it needs to report a comment"
     value: ${{ steps.spelling.outputs.docker_container }}
+
 runs:
   using: "composite"
   steps:
@@ -426,9 +430,9 @@ runs:
         ALTERNATE_ENGINE: ${{ inputs.alternate_engine }}
       run: |
         : Set up alternate engine
-        safe_engine=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r')
-        repo=$(printf '%s' "$safe_engine" | perl -pe 's/\@.*//')
-        branch=$(printf '%s' "$safe_engine" | perl -ne 'next unless s/.*\@//; print')
+        engine=$(printf '%s' "$ALTERNATE_ENGINE" | tr -d '\n\r')
+        repo=$(printf '%s\n' "$engine" | perl -pe 's/\@.*//')
+        branch=$(printf '%s\n' "$engine" | perl -ne 'next unless s/.*\@//; print')
         safe_repo=$(printf '%s' "$repo" | tr -d '\n\r')
         safe_branch=$(printf '%s' "$branch" | tr -d '\n\r')
         echo "repo=$safe_repo" >> "$GITHUB_OUTPUT"
@@ -500,7 +504,6 @@ runs:
         submodules: ${{ inputs.submodules }}
         ref: >
           ${{ case(
-
               inputs.task == 'comment' && !!github.event.issue.pull_request,
               github.event.pull_request.base.sha,
               github.event_name == 'issue_comment' && !!github.event.issue.pull_request,
@@ -508,7 +511,6 @@ runs:
               ''
               )
           }}
-
     - name: Report if checkout failed
       if: steps.checkout.outputs.outcome == 'failure'
       shell: bash
@@ -547,17 +549,16 @@ runs:
         fi
         git log -1 --one'line' HEAD
         safe_pr_number=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
-        PRIVATE_CHECKOUT_REF="refs/pull/$safe_pr_number/merge"
-        safe_checkout_ref=$(printf '%s' "$PRIVATE_CHECKOUT_REF" | tr -d '\n\r')
-        if git ls-remote origin "$safe_checkout_ref" | grep -q . &&
-            git fetch origin "$safe_checkout_ref"; then
+        PRIVATE_CHECKOUT_REF=$(printf '%s' "refs/pull/$safe_pr_number/merge" | tr -d '\n\r')
+        if git ls-remote origin "$PRIVATE_CHECKOUT_REF" | grep -q . &&
+            git fetch origin "$PRIVATE_CHECKOUT_REF"; then
           (
-            echo "PRIVATE_CHECKOUT_REF=$safe_checkout_ref"
+            echo "PRIVATE_CHECKOUT_REF=$PRIVATE_CHECKOUT_REF"
             echo "PRIVATE_SYNTHETIC_SHA=$(git rev-parse HEAD)"
             echo "PRIVATE_MERGE_SHA=$(git rev-parse FETCH_HEAD)"
           ) >> "$GITHUB_ENV"
         else
-          echo "::warning ::$safe_checkout_ref is unavailable (missing-merge-head)"
+          echo "::warning ::$PRIVATE_CHECKOUT_REF is unavailable (missing-merge-head)"
           echo "skip-upload=1" >> "$GITHUB_OUTPUT"
         fi
     - name: Prepare
@@ -624,18 +625,25 @@ runs:
         unknown-words
     - name: Store comment
       continue-on-error: true
-      if: env.MERGE_FAILED != '1' && inputs.task != 'comment' && steps.retrieve-comment.conclusion == 'skipped' && steps.spelling.outputs.internal_state_directory && !cancelled()
+      if: env.MERGE_FAILED != '1' &&
+        inputs.task != 'comment' &&
+        steps.retrieve-comment.conclusion == 'skipped' &&
+        steps.spelling.outputs.internal_state_directory &&
+        !cancelled()
       uses: ./../check-spelling-actions/upload-artifact
       with:
-        name: ${{ case(inputs.report_title_suffix != '', format('{0}-{1}', 'check-spelling-comment', inputs.report_title_suffix), 'check-spelling-comment') }}
-        path: ${{ steps.spelling.outputs.internal_state_directory }}
+        name:
+          ${{ case(inputs.report_title_suffix != '', format('{0}-{1}', 'check-spelling-comment', inputs.report_title_suffix), 'check-spelling-comment') }}
+        path:
+          ${{ steps.spelling.outputs.internal_state_directory }}
     - name: Store OCR
       continue-on-error: true
       if: steps.spelling.outputs.ocr_directory != ''
       uses: ./../check-spelling-actions/upload-artifact
       with:
         name: ocr
-        path: ${{ steps.spelling.outputs.ocr_directory }}
+        path:
+          ${{ steps.spelling.outputs.ocr_directory }}
     - name: Publish SARIF artifact
       continue-on-error: true
       id: artifact-sarif
@@ -666,13 +674,42 @@ runs:
       continue-on-error: true
       if: (success() || (failure() && env.MERGE_FAILED != '1')) && (github.run_attempt > 1 || env.ACT || steps.upload-sarif.outcome == 'failure') && env.UPLOAD_SARIF_LIMITED != ''
       shell: bash
-      run: ": Report SARIF information in Github Step Summary\n(\n  echo\n  echo '---'\n  echo\n  echo '<details><summary>\U0001F47C SARIF file</summary>'\n  echo\n  echo '```'\n  sarif_file_size=$(\n    case $(uname -s) in\n    *BSD*|Darwin)\n      stat -f %z \"$UPLOAD_SARIF_LIMITED\"\n      ;;\n    *)\n      stat -c %s \"$UPLOAD_SARIF_LIMITED\"\n      ;;\n    esac\n  )\n  sarif_file_limit=1000000\n  if [ $sarif_file_size -gt $sarif_file_limit ]; then\n    sarif_records=$(jq '.runs[0].results|length' \"$UPLOAD_SARIF_LIMITED\")\n    sarif_records_truncated=$(( $sarif_records * $sarif_file_limit / $sarif_file_size ))\n    jq -c \".runs[0].results = .runs[0].results[0:$sarif_records_truncated]\" \"$UPLOAD_SARIF_LIMITED\"\n  else\n    cat \"$UPLOAD_SARIF_LIMITED\"\n  fi\n  echo '```'\n  echo '</details>'\n) >> \"$GITHUB_STEP_SUMMARY\"\n"
+      run: |
+        : Report SARIF information in Github Step Summary
+        (
+          echo
+          echo '---'
+          echo
+          echo '<details><summary>👼 SARIF file</summary>'
+          echo
+          echo '```'
+          sarif_file_size=$(
+            case $(uname -s) in
+            *BSD*|Darwin)
+              stat -f %z "$UPLOAD_SARIF_LIMITED"
+              ;;
+            *)
+              stat -c %s "$UPLOAD_SARIF_LIMITED"
+              ;;
+            esac
+          )
+          sarif_file_limit=1000000
+          if [ $sarif_file_size -gt $sarif_file_limit ]; then
+            sarif_records=$(jq '.runs[0].results|length' "$UPLOAD_SARIF_LIMITED")
+            sarif_records_truncated=$(( $sarif_records * $sarif_file_limit / $sarif_file_size ))
+            jq -c ".runs[0].results = .runs[0].results[0:$sarif_records_truncated]" "$UPLOAD_SARIF_LIMITED"
+          else
+            cat "$UPLOAD_SARIF_LIMITED"
+          fi
+          echo '```'
+          echo '</details>'
+        ) >> "$GITHUB_STEP_SUMMARY"
     - name: Report failure status because SARIF upload failed
       shell: bash
       if: ${{ steps.upload-sarif.conclusion != 'skipped' && !steps.upload-sarif.outputs.sarif-id && !(inputs.quit_without_error && fromJSON(inputs.quit_without_error)) && env.result_code && fromJSON(env.result_code) }}
       run: |
         : SARIF Upload failed to report. Report check-spelling failure.
-        exit $result_code
+        exit "$result_code"
     - name: Step Summary (act)
       continue-on-error: true
       if: (success() || failure()) && env.ACT_STEP_SUMMARY

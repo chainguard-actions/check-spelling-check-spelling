@@ -224,8 +224,16 @@ runs:
       if [ -n "$trace" ]; then
         set -x
       fi
-      deadline=$(( $(date +%s) + $(( ${STATUS_CHECK_TIMEOUT_MILLISECONDS:-$(( 2 * 60 * 1000 ))} / 1000 )) ))
-      check_interval=$(( ${STATUS_CHECK_FREQUENCY_MILLISECONDS:-$(( 5 * 1000 ))} / 1000 ))
+      timeout_ms="${STATUS_CHECK_TIMEOUT_MILLISECONDS:-120000}"
+      case "$timeout_ms" in
+        ''|*[!0-9]*) echo "Ignoring non-numeric STATUS_CHECK_TIMEOUT_MILLISECONDS" >&2; timeout_ms=120000 ;;
+      esac
+      frequency_ms="${STATUS_CHECK_FREQUENCY_MILLISECONDS:-5000}"
+      case "$frequency_ms" in
+        ''|*[!0-9]*) echo "Ignoring non-numeric STATUS_CHECK_FREQUENCY_MILLISECONDS" >&2; frequency_ms=5000 ;;
+      esac
+      deadline=$(( $(date +%s) + 10#$timeout_ms / 1000 ))
+      check_interval=$(( 10#$frequency_ms / 1000 ))
       result=$(mktemp)
       while : ; do
         if ! curl -s -L \
