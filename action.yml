@@ -72,14 +72,83 @@ inputs:
   check_extra_dictionaries:
     description: 'Compare unknown tokens against these dictionaries and suggest if applicable'
     required: false
-    default: cspell:ada/dict/ada.txt cspell:aws/aws.txt cspell:clojure/src/clojure.txt cspell:companies/src/companies.txt cspell:cpp/src/compiler-clang-attributes.txt cspell:cpp/src/compiler-gcc.txt cspell:cpp/src/compiler-msvc.txt cspell:cpp/src/ecosystem.txt cspell:cpp/src/lang-jargon.txt cspell:cpp/src/lang-keywords.txt cspell:cpp/src/people.txt cspell:cpp/src/stdlib-c.txt cspell:cpp/src/stdlib-cerrno.txt cspell:cpp/src/stdlib-cmath.txt cspell:cpp/src/stdlib-cpp.txt cspell:cpp/src/template-strings.txt cspell:cryptocurrencies/cryptocurrencies.txt cspell:csharp/csharp.txt cspell:css/dict/css.txt cspell:dart/src/dart.txt cspell:django/dict/django.txt cspell:django/requirements.txt cspell:docker/src/docker-words.txt cspell:dotnet/dict/dotnet.txt cspell:elixir/dict/elixir.txt cspell:filetypes/filetypes.txt cspell:fonts/fonts.txt cspell:fullstack/dict/fullstack.txt cspell:gaming-terms/dict/gaming-terms.txt cspell:golang/dict/go.txt cspell:haskell/dict/haskell.txt cspell:html-symbol-entities/entities.txt cspell:html/dict/html.txt cspell:html/src/svg.txt cspell:java/src/java-terms.txt cspell:java/src/java.txt cspell:k8s/dict/k8s.txt cspell:latex/dict/latex.txt cspell:latex/samples/sample-words.txt cspell:lisp/lisp.txt cspell:lorem-ipsum/dictionary.txt cspell:lua/dict/lua.txt cspell:mnemonics/src/mnemonics.txt cspell:monkeyc/src/monkeyc_keywords.txt cspell:node/dict/node.txt cspell:npm/dict/npm.txt cspell:php/dict/php.txt cspell:powershell/dict/powershell.txt cspell:public-licenses/src/additional-licenses.txt cspell:public-licenses/src/generated/public-licenses.txt cspell:python/src/additional_words.txt cspell:python/src/common/extra.txt cspell:python/src/python/python-lib.txt cspell:python/src/python/python.txt cspell:r/src/r.txt cspell:redis/dict/redis.txt cspell:ruby/dict/ruby.txt cspell:rust/dict/rust.txt cspell:scala/dict/scala.txt cspell:shell/dict/shell-all-words.txt cspell:software-terms/dict/softwareTerms.txt cspell:software-terms/dict/webServices.txt cspell:sql/src/sql.txt cspell:sql/src/tsql.txt cspell:svelte/dict/svelte.txt cspell:swift/src/swift.txt cspell:typescript/dict/typescript.txt
+    default:
+      cspell:ada/dict/ada.txt
+      cspell:aws/aws.txt
+      cspell:clojure/src/clojure.txt
+      cspell:companies/src/companies.txt
+      cspell:cpp/src/compiler-clang-attributes.txt
+      cspell:cpp/src/compiler-gcc.txt
+      cspell:cpp/src/compiler-msvc.txt
+      cspell:cpp/src/ecosystem.txt
+      cspell:cpp/src/lang-jargon.txt
+      cspell:cpp/src/lang-keywords.txt
+      cspell:cpp/src/people.txt
+      cspell:cpp/src/stdlib-c.txt
+      cspell:cpp/src/stdlib-cerrno.txt
+      cspell:cpp/src/stdlib-cmath.txt
+      cspell:cpp/src/stdlib-cpp.txt
+      cspell:cpp/src/template-strings.txt
+      cspell:cryptocurrencies/cryptocurrencies.txt
+      cspell:csharp/csharp.txt
+      cspell:css/dict/css.txt
+      cspell:dart/src/dart.txt
+      cspell:django/dict/django.txt
+      cspell:django/requirements.txt
+      cspell:docker/src/docker-words.txt
+      cspell:dotnet/dict/dotnet.txt
+      cspell:elixir/dict/elixir.txt
+      cspell:filetypes/filetypes.txt
+      cspell:fonts/fonts.txt
+      cspell:fullstack/dict/fullstack.txt
+      cspell:gaming-terms/dict/gaming-terms.txt
+      cspell:golang/dict/go.txt
+      cspell:haskell/dict/haskell.txt
+      cspell:html-symbol-entities/entities.txt
+      cspell:html/dict/html.txt
+      cspell:html/src/svg.txt
+      cspell:java/src/java-terms.txt
+      cspell:java/src/java.txt
+      cspell:k8s/dict/k8s.txt
+      cspell:latex/dict/latex.txt
+      cspell:latex/samples/sample-words.txt
+      cspell:lisp/lisp.txt
+      cspell:lorem-ipsum/dictionary.txt
+      cspell:lua/dict/lua.txt
+      cspell:mnemonics/src/mnemonics.txt
+      cspell:monkeyc/src/monkeyc_keywords.txt
+      cspell:node/dict/node.txt
+      cspell:npm/dict/npm.txt
+      cspell:php/dict/php.txt
+      cspell:powershell/dict/powershell.txt
+      cspell:public-licenses/src/additional-licenses.txt
+      cspell:public-licenses/src/generated/public-licenses.txt
+      cspell:python/src/additional_words.txt
+      cspell:python/src/common/extra.txt
+      cspell:python/src/python/python-lib.txt
+      cspell:python/src/python/python.txt
+      cspell:r/src/r.txt
+      cspell:redis/dict/redis.txt
+      cspell:ruby/dict/ruby.txt
+      cspell:rust/dict/rust.txt
+      cspell:scala/dict/scala.txt
+      cspell:shell/dict/shell-all-words.txt
+      cspell:software-terms/dict/softwareTerms.txt
+      cspell:software-terms/dict/webServices.txt
+      cspell:sql/src/sql.txt
+      cspell:sql/src/tsql.txt
+      cspell:svelte/dict/svelte.txt
+      cspell:swift/src/swift.txt
+      cspell:typescript/dict/typescript.txt
   extra_dictionary_limit:
     description: 'Limit the number of suggested extra dictionaries.'
     required: false
     default: '5'
   event_aliases:
     description: >-
-      Try to treat a GitHub event "a" as GitHub event "b" (JSON map). If this flag was available before this tool recognized `pull_request_target`, `{"pull_request_target":"pull_request"}` would have mapped it to `pull_request`.
+      Try to treat a GitHub event "a" as GitHub event "b" (JSON map).
+      If this flag was available before this tool recognized `pull_request_target`,
+      `{"pull_request_target":"pull_request"}` would have mapped it to `pull_request`.
     required: false
     default: ''
   shortest_word:
@@ -230,6 +299,7 @@ inputs:
     description: 'Cache dictionaries'
     required: false
     default: 1
+
 outputs:
   unknown_words:
     description: "Unrecognized words (should be added to expect.txt)"
@@ -258,6 +328,7 @@ outputs:
   docker_container:
     description: "Hack for nektos/act - pass to inputs.caller_container to give check-spelling a way to retrieve data it needs to report a comment"
     value: ${{ steps.spelling.outputs.docker_container }}
+
 runs:
   using: 'composite'
   steps:
@@ -289,8 +360,8 @@ runs:
       shell: bash
       run: |
         THIS_ACTION_PATH=$(realpath "$GITHUB_ACTION_PATH")
-        chmod +x $THIS_ACTION_PATH/*.sh $THIS_ACTION_PATH/*.pl $THIS_ACTION_PATH/wrappers/*
-        perl -pi -e's/\015\012/\012/g' $THIS_ACTION_PATH/*.sh $THIS_ACTION_PATH/*.pl $THIS_ACTION_PATH/wrappers/*
+        chmod +x "$THIS_ACTION_PATH"/*.sh "$THIS_ACTION_PATH"/*.pl "$THIS_ACTION_PATH"/wrappers/*
+        perl -pi -e's/\015\012/\012/g' "$THIS_ACTION_PATH"/*.sh "$THIS_ACTION_PATH"/*.pl "$THIS_ACTION_PATH"/wrappers/*
     - name: parse alternate engine
       id: parse-alternate-engine
       if: inputs.alternate_engine
@@ -298,13 +369,15 @@ runs:
       env:
         ALTERNATE_ENGINE: ${{ inputs.alternate_engine }}
       run: |
-        repo=$(printf '%s' "$ALTERNATE_ENGINE" | perl -pe 's/\@.*//' | tr -d '\n\r')
-        branch=$(printf '%s' "$ALTERNATE_ENGINE" | perl -ne 'next unless s/.*\@//; print' | tr -d '\n\r')
+        repo=$(printf '%s\n' "$ALTERNATE_ENGINE" | perl -pe 's/\@.*//') || true
+        branch=$(printf '%s\n' "$ALTERNATE_ENGINE" | perl -ne 'next unless s/.*\@//; print') || true
+        repo=$(printf '%s' "$repo" | tr -d '\n\r')
+        branch=$(printf '%s' "$branch" | tr -d '\n\r')
         echo "repo=$repo" >> "$GITHUB_OUTPUT"
         echo "branch=$branch" >> "$GITHUB_OUTPUT"
     - name: alternate-engine
       if: inputs.alternate_engine
-      uses: chainguard-actions/actions-checkout@31bbccf724702f8a0dc7a3ed7db8fcca2066babc # v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         path: alternate-engine
         repository: ${{ steps.parse-alternate-engine.outputs.repo }}
@@ -321,8 +394,10 @@ runs:
       shell: bash
       run: |
         THIS_ACTION_PATH=$(realpath "$GITHUB_ACTION_PATH")
+        THIS_ACTION_PATH=$(printf '%s' "$THIS_ACTION_PATH" | tr -d '\n\r')
+        SAFE_PATH=$(printf '%s' "$PATH" | tr -d '\n\r')
         echo "THIS_ACTION_PATH=$THIS_ACTION_PATH" >> "$GITHUB_ENV"
-        echo "PATH=$THIS_ACTION_PATH/wrappers:$PATH" >> "$GITHUB_ENV"
+        echo "PATH=$THIS_ACTION_PATH/wrappers:$SAFE_PATH" >> "$GITHUB_ENV"
     - name: check-actions
       id: check-actions
       env:
@@ -335,7 +410,7 @@ runs:
     - name: checkout
       id: checkout-replacement
       if: inputs.checkout && inputs.checkout != 'false' && !inputs.custom_task && env.replace_v3_actions_checkout
-      uses: chainguard-actions/check-spelling-actions-checkout@7e734df7c072a838405e81bc12ba3dab10a58796 # v4
+      uses: check-spelling/actions-checkout@cb50106c205b30e86652e685b759a4fd92e25fb5 # v4
       with:
         path: ${{ inputs.experimental_path }}
         ssh-key: ${{ inputs.ssh_key }}
@@ -350,7 +425,7 @@ runs:
           }}
     - name: checkout
       if: inputs.checkout && inputs.checkout != 'false' && !inputs.custom_task && !env.replace_v4_actions_checkout
-      uses: chainguard-actions/actions-checkout@31bbccf724702f8a0dc7a3ed7db8fcca2066babc # v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         path: ${{ inputs.experimental_path }}
         ssh-key: ${{ inputs.ssh_key }}
@@ -366,7 +441,7 @@ runs:
     - name: checkout-merge
       id: checkout-merge
       if: github.event.pull_request.number && (contains(github.event_name, 'pull_request')) && (inputs.checkout && inputs.checkout != 'false' && !inputs.custom_task && !inputs.task)
-      uses: chainguard-actions/check-spelling-checkout-merge@8289b36d6b793ec8d9fded05215886859d430a98 # v0.0.4
+      uses: check-spelling/checkout-merge@3aa4a3dfa942930fc6d88a77e55f6e0001445cdc # v0.0.4
       with:
         path: ${{ inputs.experimental_path }}
     - name: raise-merge-failure
@@ -385,10 +460,9 @@ runs:
       run: |
         cd "$EXPERIMENTAL_PATH"
         git show HEAD
-        safe_pr_number=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
-        PRIVATE_SARIF_REF="refs/pull/$safe_pr_number/merge"
-        safe_ref=$(printf '%s' "$PRIVATE_SARIF_REF" | tr -d '\n\r')
-        echo "PRIVATE_SARIF_REF=$safe_ref" >> "$GITHUB_ENV"
+        PRIVATE_SARIF_REF="refs/pull/$PR_NUMBER/merge"
+        PRIVATE_SARIF_REF=$(printf '%s' "$PRIVATE_SARIF_REF" | tr -d '\n\r')
+        echo "PRIVATE_SARIF_REF=$PRIVATE_SARIF_REF" >> "$GITHUB_ENV"
         git fetch origin "$PRIVATE_SARIF_REF"
         echo "PRIVATE_SARIF_SHA=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
     - name: prepare
@@ -399,7 +473,7 @@ runs:
       shell: bash
     - name: retrieve-comment
       if: inputs.task && inputs.task != 'spelling' && (!env.ACT || github.token)
-      uses: chainguard-actions/actions-download-artifact@02fcfeb6de71bd1e76638991e9e4f88115ca2e87 # v3
+      uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
       with:
         name: "check-spelling-comment"
         path: /tmp/data
@@ -431,15 +505,15 @@ runs:
       run: |
         perl_modules="$(
           echo "$PERL_LIBRARIES" |tr " " "\n" |sort|xargs)"
+        perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
         perl_modules_sha=$(echo "$perl_modules" | shasum | perl -pe 's/\s.*//')
         installsitearch=$(perl -V:'installsitearch' | perl -pe 's/.*=.(.*).;/$1/')
         installsitelib=$(perl -V:'installsitelib' | perl -pe 's/.*=.(.*).;/$1/')
         sudo install -d -o $(whoami) "$installsitearch" "$installsitelib"
-        safe_perl_modules=$(printf '%s' "$perl_modules" | tr -d '\n\r')
         (
           echo "installsitearch=$installsitearch"
           echo "installsitelib=$installsitelib"
-          echo "perl-modules=$safe_perl_modules"
+          echo "perl-modules=$perl_modules"
           echo "perl-key=check-spelling-perl-$(perl -e 'print "$^V"')-$perl_modules_sha"
         ) >> "$GITHUB_OUTPUT"
     - name: retrieve perl libraries arch
@@ -456,6 +530,7 @@ runs:
       with:
         path: ${{ steps.perl-config.outputs.installsitelib }}
         key: ${{ steps.perl-config.outputs.perl-key }}-lib
+
     - name: install perl modules
       if: steps.perl-config.outputs.perl-modules
       shell: bash
@@ -464,19 +539,18 @@ runs:
       run: |
         modules=()
         if [ -n "$PERL_MODULES" ]; then
-          while IFS= read -r -d '' t; do modules+=("$t"); done \
-            < <(printf '%s' "$PERL_MODULES" | xargs printf '%s\0')
+          read -r -d '' -a modules <<< "$PERL_MODULES" || true
         fi
         cpan_modules=()
         for module in "${modules[@]}"; do
-          MODULE="$module" perl -e 'use $ENV{MODULE}; 1;' > /dev/null 2>/dev/null || cpan_modules+=("$module")
+          perl -e "use $module; 1;" > /dev/null 2>/dev/null || cpan_modules+=("$module")
         done
-        if [ "${#cpan_modules[@]}" -gt 0 ]; then
+        if [ ${#cpan_modules[@]} -gt 0 ]; then
           if ! command -v cpanm >/dev/null 2>/dev/null; then
-            CPANM_INSTALLER=$(mktemp)
-            curl -s -S -L https://cpanmin.us -o "$CPANM_INSTALLER"
-            perl "$CPANM_INSTALLER" --sudo App::cpanminus
-            rm -f "$CPANM_INSTALLER"
+            CPANM_SCRIPT="$(mktemp)"
+            curl -s -S -L https://cpanmin.us -o "$CPANM_SCRIPT"
+            perl "$CPANM_SCRIPT" --sudo App::cpanminus
+            rm -f "$CPANM_SCRIPT"
           fi
           perl "$(command -v cpanm)" -S --notest "${cpan_modules[@]}"
         fi
@@ -489,7 +563,8 @@ runs:
         spellchecker: ${{ env.THIS_ACTION_PATH }}
         GH_ACTION_REPOSITORY: ${{ github.action_repository || github.repository }}
         GH_ACTION_REF: ${{ github.action_ref || github.ref_name }}
-      run: unknown-words
+      run:
+        unknown-words
       shell: bash
     - name: save-dictionaries
       uses: actions/cache/save@6f8efc29b200d32929f49075959781ed54ec270c # v3
@@ -512,8 +587,12 @@ runs:
         path: ${{ steps.perl-config.outputs.installsitelib }}
         key: ${{ steps.perl-config.outputs.perl-key }}-lib
     - name: store-comment
-      if: (contains(github.event_name, 'pull_request') || github.event_name == 'push') && inputs.custom_task != 'comment' && ((failure() && env.MERGE_FAILED != '1') || steps.spelling.outputs.followup) && steps.spelling.outputs.internal_state_directory
-      uses: chainguard-actions/actions-upload-artifact@9dcdbf6e32ea303068b16cb8c638bd3aa90684fd # v3
+      if: (contains(github.event_name, 'pull_request') ||
+          github.event_name == 'push') &&
+        inputs.custom_task != 'comment' &&
+        ((failure() && env.MERGE_FAILED != '1') || steps.spelling.outputs.followup) &&
+        steps.spelling.outputs.internal_state_directory
+      uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
       with:
         name: "check-spelling-comment"
         path: |
@@ -530,7 +609,7 @@ runs:
     - name: artifact-sarif
       id: artifact-sarif
       if: (success() || (failure() && env.MERGE_FAILED != '1')) && env.UPLOAD_SARIF != ''
-      uses: chainguard-actions/actions-upload-artifact@9dcdbf6e32ea303068b16cb8c638bd3aa90684fd # v3
+      uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
       with:
         name: "check-spelling-sarif"
         retention-days: 1
@@ -539,7 +618,7 @@ runs:
     - name: upload-sarif
       id: upload-sarif
       if: (success() || (failure() && env.MERGE_FAILED != '1')) && env.UPLOAD_SARIF != ''
-      uses: chainguard-actions/github-codeql-action/upload-sarif@baddbcd7c84423b617a9dff38e28986a72f7ebe9 # v2
+      uses: github/codeql-action/upload-sarif@b8d3b6e8af63cde30bdc382c0bc28114f4346c88 # v2
       with:
         wait-for-processing: false
         sarif_file: ${{ env.UPLOAD_SARIF }}

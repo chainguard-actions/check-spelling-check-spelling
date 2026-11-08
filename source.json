@@ -4,9 +4,8 @@
   "version": "v0.0.22",
   "commit_sha": "00c989c97749eb0cb2d256bdc55ac61b0096c6d3",
   "url": "https://github.com/check-spelling/check-spelling",
-  "policy_sha": "d636be7e43ef829af6e853da6b3c7566db9f72fe",
+  "policy_sha": "374911c4be584df24e6da57af2d990570ef0f859",
   "test_policy_sha": "843adf9e4b8f85d0c08b27b9d0b09dd094b54702",
   "test_agent_version": "2",
-  "harden_agent_version": "2",
-  "dependency_fingerprint": "sha256:330ffd14b510887be7ea3c620518216f09ae2af7186a3de75e8c0341c2934b92"
+  "harden_agent_version": "2"
 }
